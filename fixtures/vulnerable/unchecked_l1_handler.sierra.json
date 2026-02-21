@@ -1,0 +1,55 @@
+{
+  "type_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "felt252" },
+      "long_id": { "generic_id": "felt252", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 1, "debug_name": "System" },
+      "long_id": { "generic_id": "System", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": false, "duplicatable": false, "zero_sized": false }
+    }
+  ],
+  "libfunc_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "storage_write_syscall" },
+      "long_id": { "generic_id": "storage_write_syscall", "generic_args": [] }
+    }
+  ],
+  "statements": [
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 0, "debug_name": "storage_write_syscall" },
+        "args": [2, 3, 4],
+        "branches": [
+          { "target": "Fallthrough", "results": [5] }
+        ]
+      }
+    },
+    { "Return": [5] }
+  ],
+  "funcs": [
+    {
+      "id": { "id": 0, "debug_name": "vulnerable_bridge::__l1_handler::handle_message" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" },
+          { "id": 0, "debug_name": "felt252" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" }
+        ]
+      },
+      "params": [
+        { "id": 0, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 1, "ty": { "id": 0, "debug_name": "felt252" } },
+        { "id": 2, "ty": { "id": 0, "debug_name": "felt252" } },
+        { "id": 3, "ty": { "id": 0, "debug_name": "felt252" } },
+        { "id": 4, "ty": { "id": 0, "debug_name": "felt252" } }
+      ],
+      "entry_point": 0
+    }
+  ]
+}

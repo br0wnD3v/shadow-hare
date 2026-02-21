@@ -1,0 +1,97 @@
+{
+  "type_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "felt252" },
+      "long_id": { "generic_id": "felt252", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 1, "debug_name": "u256" },
+      "long_id": { "generic_id": "u256", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 2, "debug_name": "u128" },
+      "long_id": { "generic_id": "u128", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 3, "debug_name": "()" },
+      "long_id": { "generic_id": "Tuple", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": true }
+    }
+  ],
+  "libfunc_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "u256_overflowing_sub" },
+      "long_id": { "generic_id": "u256_overflowing_sub", "generic_args": [] }
+    },
+    {
+      "id": { "id": 1, "debug_name": "branch_align" },
+      "long_id": { "generic_id": "branch_align", "generic_args": [] }
+    },
+    {
+      "id": { "id": 2, "debug_name": "panic_with_felt252" },
+      "long_id": { "generic_id": "panic_with_felt252", "generic_args": [] }
+    }
+  ],
+  "statements": [
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 0, "debug_name": "u256_overflowing_sub" },
+        "args": [0, 1, 2, 3],
+        "branches": [
+          { "target": "Fallthrough", "results": [4, 5] },
+          { "target": { "Statement": 3 }, "results": [6, 7] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 1, "debug_name": "branch_align" },
+        "args": [],
+        "branches": [
+          { "target": "Fallthrough", "results": [] }
+        ]
+      }
+    },
+    { "Return": [4, 5] },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 1, "debug_name": "branch_align" },
+        "args": [],
+        "branches": [
+          { "target": "Fallthrough", "results": [] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 2, "debug_name": "panic_with_felt252" },
+        "args": [],
+        "branches": []
+      }
+    }
+  ],
+  "funcs": [
+    {
+      "id": { "id": 0, "debug_name": "safe_contract::checked_subtract" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "u256" },
+          { "id": 1, "debug_name": "u256" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "u256" }
+        ]
+      },
+      "params": [
+        { "id": 0, "ty": { "id": 1, "debug_name": "u256" } },
+        { "id": 1, "ty": { "id": 1, "debug_name": "u256" } },
+        { "id": 2, "ty": { "id": 2, "debug_name": "u128" } },
+        { "id": 3, "ty": { "id": 2, "debug_name": "u128" } }
+      ],
+      "entry_point": 0
+    }
+  ]
+}

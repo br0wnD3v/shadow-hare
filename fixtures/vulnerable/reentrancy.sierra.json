@@ -1,0 +1,84 @@
+{
+  "type_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "felt252" },
+      "long_id": { "generic_id": "felt252", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 1, "debug_name": "System" },
+      "long_id": { "generic_id": "System", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": false, "duplicatable": false, "zero_sized": false }
+    },
+    {
+      "id": { "id": 2, "debug_name": "u256" },
+      "long_id": { "generic_id": "u256", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    }
+  ],
+  "libfunc_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "storage_read_syscall" },
+      "long_id": { "generic_id": "storage_read_syscall", "generic_args": [] }
+    },
+    {
+      "id": { "id": 1, "debug_name": "call_contract_syscall" },
+      "long_id": { "generic_id": "call_contract_syscall", "generic_args": [] }
+    },
+    {
+      "id": { "id": 2, "debug_name": "storage_write_syscall" },
+      "long_id": { "generic_id": "storage_write_syscall", "generic_args": [] }
+    }
+  ],
+  "statements": [
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 0, "debug_name": "storage_read_syscall" },
+        "args": [1, 2],
+        "branches": [
+          { "target": "Fallthrough", "results": [3, 4] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 1, "debug_name": "call_contract_syscall" },
+        "args": [3, 4, 5],
+        "branches": [
+          { "target": "Fallthrough", "results": [6, 7] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 2, "debug_name": "storage_write_syscall" },
+        "args": [6, 7, 8],
+        "branches": [
+          { "target": "Fallthrough", "results": [9] }
+        ]
+      }
+    },
+    { "Return": [9] }
+  ],
+  "funcs": [
+    {
+      "id": { "id": 0, "debug_name": "vulnerable_dex::__external::withdraw" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" },
+          { "id": 2, "debug_name": "u256" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" }
+        ]
+      },
+      "params": [
+        { "id": 1, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 2, "ty": { "id": 0, "debug_name": "felt252" } },
+        { "id": 5, "ty": { "id": 2, "debug_name": "u256" } }
+      ],
+      "entry_point": 0
+    }
+  ]
+}

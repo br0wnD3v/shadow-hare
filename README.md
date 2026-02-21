@@ -1,0 +1,223 @@
+# shadowhare
+
+Static analyzer for Cairo/Starknet contracts at the Sierra artifact layer.
+
+`shadowhare` scans compiled artifacts (`.sierra.json` and
+`.contract_class.json`), runs built-in detectors, and emits findings in human,
+JSON, or SARIF format.
+
+## What It Does
+
+- Loads Sierra artifacts from files or directories (recursive walk).
+- Normalizes artifacts into a single internal IR.
+- Classifies functions (external, l1_handler, constructor, internal, view).
+- Runs detector suite in parallel.
+- Applies severity threshold and suppression rules.
+- Supports baseline diffing (`--fail-on-new-only` + `--baseline`).
+- Emits:
+  - Human-readable report
+  - Versioned JSON report
+  - SARIF 2.1.0 for code-scanning pipelines
+
+## Current Detector Set
+
+The built-in registry currently runs 8 detectors (deterministic output order):
+
+| Detector ID | Severity | Confidence | Core Trigger |
+|---|---|---|---|
+| `u256_underflow` | High | Medium | Overflowing subtraction libfunc with only a single branch (unchecked path) |
+| `unchecked_l1_handler` | High | High | L1 handler where inferred `from_address` is not used in validation/comparison |
+| `reentrancy` | High | Medium | Storage read -> external call -> storage write in entrypoint functions |
+| `felt252_overflow` | High | Low | Tainted felt252 arithmetic with no range-check libfunc observed |
+| `controlled_library_call` | High | Medium | `library_call*` receives tainted/user-controlled arguments |
+| `tx_origin_auth` | Medium | Medium | Values tainted from `get_tx_info`/`get_execution_info` reach auth-like checks |
+| `unused_return` | Low | High | Invocation results are never read later in the function |
+| `dead_code` | Info | Medium | Non-entrypoint function appears unreferenced (debug-info-dependent heuristic) |
+
+## CLI
+
+### Commands
+
+```bash
+shadowhare detect <PATH...> [options]
+shadowhare update-baseline <PATH...> [--baseline <file>]
+shadowhare list-detectors
+```
+
+Short CLI alias:
+
+```bash
+shdr detect <PATH...> [options]
+```
+
+### `detect` options
+
+- `--format <human|json|sarif>` (default: `human`)
+- `--min-severity <info|low|medium|high|critical>` (default: `low`)
+- `--fail-on-new-only`
+- `--baseline <path>`
+- `--detectors <id1,id2,...>`
+- `--exclude <id1,id2,...>`
+- `--manifest <Scarb.toml path>`
+- `--strict`
+
+### Exit codes
+
+- `0`: no relevant findings
+- `1`: findings exist
+- `2`: runtime/config/error path
+
+If `--fail-on-new-only` is set, exit code `1` is based only on findings not
+present in baseline fingerprints.
+
+## Input Artifacts
+
+Accepted files:
+
+- `*.sierra.json` (raw Sierra JSON)
+- `*.contract_class.json` (Starknet contract class JSON)
+
+Directory inputs are traversed recursively and filtered to the extensions above.
+
+## Scarb Integration
+
+This crate ships Scarb subcommand binaries: `scarb-shadowhare` and
+`scarb-shdr`.
+
+Expected usage:
+
+```bash
+scarb shadowhare detect
+scarb shdr detect
+```
+
+Behavior:
+
+- If `SCARB_MANIFEST_PATH` is set and `--manifest` is not passed, it injects
+  `--manifest <SCARB_MANIFEST_PATH>`.
+- If `SCARB_TARGET_DIR` is set and no explicit path is provided after
+  `detect`/`update-baseline`, it injects `<SCARB_TARGET_DIR>/<SCARB_PROFILE>`
+  (default profile fallback: `dev`).
+
+## Configuration via `Scarb.toml`
+
+Supported config source: `[tool.shadowhare]`.
+Backward-compatible fallback: `[tool.analyzer]`.
+
+```toml
+[tool.shadowhare]
+detectors = ["all"]                # or explicit ids
+exclude = ["dead_code"]            # ignored if detectors is explicit non-"all"
+severity_threshold = "medium"      # info|low|medium|high
+baseline = ".shadowhare-baseline.json"
+strict = false
+
+[[tool.shadowhare.suppress]]
+id = "reentrancy"
+location_hash = "a1b2c3d4"         # optional; omit to suppress all from detector
+```
+
+Merging rules:
+
+- CLI flags override `Scarb.toml` values.
+- `detectors` and `exclude` are mapped to include/exclude selection.
+- Suppressions match by detector id + optional location fingerprint.
+
+## Baseline File
+
+Default baseline schema:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "fingerprints": ["abcd1234", "ef567890"]
+}
+```
+
+Workflow:
+
+```bash
+shadowhare update-baseline target/dev --baseline .shadowhare-baseline.json
+shadowhare detect target/dev --baseline .shadowhare-baseline.json --fail-on-new-only
+```
+
+## Output Formats
+
+### Human
+
+- Per-finding section with detector id, confidence, location, fingerprint.
+- Severity summary.
+- Non-fatal warnings section.
+
+### JSON (`schema_version = 1.0.0`)
+
+Top-level fields:
+
+- `schema_version`
+- `generated_at` (Unix timestamp string)
+- `analyzer_version`
+- `sources`
+- `findings`
+- `warnings`
+- `summary`
+
+### SARIF
+
+- SARIF version: `2.1.0`
+- Schema: `https://json.schemastore.org/sarif-2.1.0.json`
+- Severity mapping:
+  - Critical/High -> `error`
+  - Medium -> `warning`
+  - Low/Info -> `note`
+
+## Compatibility Model
+
+Compatibility types exist in code (`Tier1`, `Tier2`, `Tier3`, `ParseOnly`,
+`Unsupported`), with default matrix:
+
+- Tier1: `~2.16`
+- Tier2: `~2.15`
+- Tier3: `~2.14`
+
+Current loader behavior:
+
+- If compiler/Sierra version metadata is unavailable, analyzer warns and uses
+  Tier3 best-effort mode.
+- Parse-only mode skips detector execution.
+
+## Accuracy/Heuristic Notes
+
+- Several detectors are intentionally heuristic (especially `felt252_overflow`
+  and `dead_code`).
+- Source `line`/`col` fields are optional and may be absent.
+- Contract-class decoding uses `cairo-lang-starknet-classes` and enriches names
+  from contract debug info when present.
+
+## Build and Test
+
+```bash
+cargo build
+cargo test
+```
+
+List detectors:
+
+```bash
+shadowhare list-detectors
+```
+
+## Library API (Internal Consumers)
+
+Primary exported entry points:
+
+- `analyse_paths(paths, config, registry) -> AnalysisResult`
+- `render_output(result, format) -> String`
+- `update_baseline(path, findings)`
+
+Core modules:
+
+- `loader`: artifact loading + normalization
+- `ir`: program/function/type/libfunc registries
+- `analysis`: CFG/dataflow/taint/storage helpers
+- `detectors`: finding model + detector registry + built-ins
+- `output`: human/json/sarif renderers
