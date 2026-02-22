@@ -9,14 +9,18 @@ use crate::loader::{CompatibilityTier, Statement};
 /// check before the upgrade call.
 ///
 /// Upgradeable contracts must gate `replace_class` behind an ownership check.
-/// The expected Sierra pattern is:
+/// Two patterns are recognised:
+///
+/// Pattern A — inline access control:
 ///   storage_read_syscall (owner slot)
 ///   → comparison libfunc on the stored value vs get_caller_address
 ///   → replace_class_syscall
 ///
-/// If `replace_class_syscall` is present but the function body contains no
-/// storage-read value used in a comparison/auth operation, the upgrade is
-/// effectively permissionless.
+/// Pattern B — access control via function call:
+///   function_call<user@...ownable::assert_only_owner...>
+///   → replace_class_syscall
+///
+/// If neither pattern is present the upgrade is effectively permissionless.
 pub struct UnprotectedUpgrade;
 
 const REPLACE_CLASS_LIBFUNCS: &[&str] = &["replace_class_syscall", "replace_class"];
@@ -120,8 +124,28 @@ impl Detector for UnprotectedUpgrade {
     }
 }
 
-/// Returns true if the function body contains a storage_read whose result is
-/// used in an owner-check libfunc before the first replace_class invocation.
+/// Keywords that indicate an access-control function call (Pattern B).
+/// These match against the full debug_name of the libfunc, which for
+/// internal calls looks like:
+///   "function_call<user@zklend::libraries::ownable::assert_only_owner::...>"
+const ACCESS_CONTROL_KEYWORDS: &[&str] = &[
+    "assert_only_owner",
+    "only_owner",
+    "assert_owner",
+    "require_owner",
+    "ownable",
+    "access_control",
+    "require_role",
+    "only_role",
+    "assert_role",
+];
+
+/// Returns true if the function body contains an owner check before the
+/// first replace_class invocation.  Two patterns are checked:
+///
+/// A) A storage_read / get_caller_address result flows into a comparison libfunc.
+/// B) A `function_call<user@...ownable/access_control...>` is present — this
+///    handles proxy patterns like `ownable::assert_only_owner(@self)`.
 fn has_storage_backed_check(
     stmts: &[Statement],
     replace_sites: &[usize],
@@ -140,6 +164,21 @@ fn has_storage_backed_check(
             Some(inv) => inv,
             None => continue,
         };
+
+        // Pattern B: call to a named access-control function.
+        // In Sierra, internal function calls compile to libfuncs with names like:
+        //   "function_call<user@path::ownable::assert_only_owner::...>"
+        // For .contract_class.json files the invocation libfunc_id is a numeric
+        // integer, so we must look up the declaration to get the full debug name.
+        let full_name = program
+            .libfunc_registry
+            .lookup(&inv.libfunc_id)
+            .and_then(|d| d.id.debug_name.as_deref())
+            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+            .unwrap_or("");
+        if ACCESS_CONTROL_KEYWORDS.iter().any(|kw| full_name.contains(kw)) {
+            return true;
+        }
 
         let is_storage_read = program.libfunc_registry.is_storage_read(&inv.libfunc_id);
         let is_caller = program.libfunc_registry.matches(&inv.libfunc_id, "get_caller_address");
@@ -164,7 +203,7 @@ fn has_storage_backed_check(
             }
         }
 
-        // Check if a privileged var is used in an owner-check libfunc
+        // Check if a privileged var is used in an owner-check libfunc (Pattern A)
         let is_check = OWNER_CHECK_LIBFUNCS
             .iter()
             .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));

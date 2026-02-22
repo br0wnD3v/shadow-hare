@@ -12,11 +12,27 @@ pub type TaintSet = HashSet<u64>;
 ///
 /// A variable is tainted if:
 /// - It is an initial taint seed (e.g. L1 from_address, user-supplied calldata).
-/// - It is produced by an invocation where at least one argument is tainted.
+/// - It is produced by an invocation where at least one argument is tainted,
+///   unless that invocation matches a sanitizer pattern.
+///
+/// Sanitizers break the taint chain — their outputs are not tainted even when
+/// their inputs are. Use this for libfuncs that produce trusted values regardless
+/// of their inputs (e.g. `get_caller_address`, `storage_base_address_const`,
+/// `pedersen`, `felt252_const`).
+///
+/// Skipped libfuncs do not propagate taint at all — use this for opaque calls
+/// whose taint semantics are handled externally (e.g. `function_call`).
 pub struct TaintAnalysis<'a> {
     pub libfuncs: &'a LibfuncRegistry,
     /// Variables that are taint seeds (controlled by adversary).
     pub seeds: HashSet<u64>,
+    /// Libfunc name substrings whose outputs should NOT be tainted,
+    /// even if their inputs are. (Sanitizers — trusted value producers.)
+    pub sanitizers: &'a [&'a str],
+    /// Libfunc name substrings that should be skipped entirely — taint
+    /// is neither propagated to outputs nor blocked; the invocation is a no-op
+    /// for taint purposes. Use for function_call and other opaque boundaries.
+    pub skip_libfuncs: &'a [&'a str],
 }
 
 impl<'a> ForwardAnalysis for TaintAnalysis<'a> {
@@ -30,9 +46,25 @@ impl<'a> ForwardAnalysis for TaintAnalysis<'a> {
         match stmt {
             Statement::Return(_) => tainted.clone(),
             Statement::Invocation(inv) => {
+                let name = self
+                    .libfuncs
+                    .generic_id(&inv.libfunc_id)
+                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .unwrap_or("");
+
+                // Skip libfuncs: no taint change at all
+                if self.skip_libfuncs.iter().any(|p| name.contains(p)) {
+                    return tainted.clone();
+                }
+
                 let any_arg_tainted = inv.args.iter().any(|a| tainted.contains(a));
 
                 if any_arg_tainted {
+                    // Sanitizers: break the chain — don't taint outputs
+                    if self.sanitizers.iter().any(|p| name.contains(p)) {
+                        return tainted.clone();
+                    }
+
                     let mut next = tainted.clone();
                     for branch in &inv.branches {
                         for result in &branch.results {

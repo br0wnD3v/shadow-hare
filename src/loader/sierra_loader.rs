@@ -137,8 +137,28 @@ impl RawBranchTarget {
     }
 }
 
-/// Variable ID — just an integer index.
-pub type RawVarId = u64;
+/// Variable ID — deserializes from either a plain integer (contract class / old format)
+/// or an object `{"id": N, "debug_name": ...}` (raw Sierra JSON from Scarb).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RawVarId(pub u64);
+
+impl<'de> serde::Deserialize<'de> for RawVarId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        match &v {
+            serde_json::Value::Number(n) => n
+                .as_u64()
+                .map(RawVarId)
+                .ok_or_else(|| serde::de::Error::custom("VarId number out of u64 range")),
+            serde_json::Value::Object(obj) => obj
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .map(RawVarId)
+                .ok_or_else(|| serde::de::Error::custom("VarId object missing numeric id")),
+            _ => Err(serde::de::Error::custom("Expected VarId (integer or {id: N})")),
+        }
+    }
+}
 
 /// Sierra ID — can be numeric, named, or both.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -639,7 +659,7 @@ fn normalise_raw_program(
             id: f.id,
             param_types: f.signature.param_types,
             ret_types: f.signature.ret_types,
-            params: f.params.into_iter().map(|p| (p.id, p.ty)).collect(),
+            params: f.params.into_iter().map(|p| (p.id.0, p.ty)).collect(),
             entry_point: f.entry_point as usize,
         })
         .collect();
@@ -654,7 +674,7 @@ fn normalise_raw_program(
 
 fn normalise_statement(raw: RawStatement, warnings: &mut Vec<AnalyzerWarning>) -> Statement {
     match raw {
-        RawStatement::Return { ret } => Statement::Return(ret),
+        RawStatement::Return { ret } => Statement::Return(ret.into_iter().map(|v| v.0).collect()),
         RawStatement::Invocation(inv) => {
             let branches = inv
                 .inner
@@ -665,13 +685,13 @@ fn normalise_statement(raw: RawStatement, warnings: &mut Vec<AnalyzerWarning>) -
                         RawBranchTarget::Fallthrough(_) => BranchTarget::Fallthrough,
                         RawBranchTarget::Statement { idx } => BranchTarget::Statement(*idx as usize),
                     },
-                    results: b.results,
+                    results: b.results.into_iter().map(|v| v.0).collect(),
                 })
                 .collect();
 
             Statement::Invocation(Invocation {
                 libfunc_id: inv.inner.libfunc_id,
-                args: inv.inner.args,
+                args: inv.inner.args.into_iter().map(|v| v.0).collect(),
                 branches,
             })
         }

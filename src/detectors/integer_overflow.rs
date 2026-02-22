@@ -18,6 +18,14 @@ use crate::loader::CompatibilityTier;
 pub struct UncheckedIntegerOverflow;
 
 /// Libfunc patterns that can silently overflow/underflow on bounded integers.
+///
+/// Note: `u128_mul_guarantee_verify` is intentionally excluded.
+/// It is a Sierra internal instruction emitted as a verification step inside
+/// every u256/u128 division implementation — it takes a `u128MulGuarantee`
+/// token and proves the division is correct.  It is NOT a user-visible
+/// multiplication and always has exactly 1 branch by construction.
+/// Including it causes a false positive on every function that performs
+/// u256 division (e.g., `safe_math::div`, accumulator math).
 const OVERFLOW_LIBFUNCS: &[&str] = &[
     "u128_overflowing_add",
     "u128_overflowing_sub",
@@ -29,8 +37,7 @@ const OVERFLOW_LIBFUNCS: &[&str] = &[
     "u16_overflowing_sub",
     "u8_overflowing_add",
     "u8_overflowing_sub",
-    // Multiplication overflow variants
-    "u128_mul_guarantee_verify",
+    // Multiplication overflow variants (no u128_mul_guarantee_verify — see above)
     "u64_overflowing_mul",
     "u32_overflowing_mul",
 ];

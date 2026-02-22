@@ -33,10 +33,15 @@ const DIV_LIBFUNCS: &[&str] = &[
     "integer_division",
 ];
 
-/// Multiplication libfuncs.
+/// Multiplication libfuncs that represent *business-logic* multiplications.
+///
+/// Note: `u128_mul_guarantee_verify` is intentionally excluded here.
+/// It is an internal Sierra verification step emitted as part of every u256/u128
+/// division implementation (it proves quotient * divisor + remainder == dividend).
+/// Including it would cause every call to `safe_math::div` to appear as a
+/// divide-before-multiply false positive.
 const MUL_LIBFUNCS: &[&str] = &[
     "u256_wide_mul",
-    "u128_mul_guarantee_verify",
     "u128_wide_mul",
     "u64_wide_mul",
     "u32_wide_mul",
