@@ -4,13 +4,18 @@ use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
 
+pub mod events;
 pub mod felt252_overflow;
+pub mod integer_overflow;
 pub mod l1_handler;
 pub mod library_call;
+pub mod precision;
 pub mod reentrancy;
+pub mod storage_access;
 pub mod tx_origin;
 pub mod u256_underflow;
 pub mod unused;
+pub mod upgrade;
 
 // ── Finding model ────────────────────────────────────────────────────────────
 
@@ -167,13 +172,22 @@ impl DetectorRegistry {
     pub fn all() -> Self {
         Self {
             detectors: vec![
+                // High severity
                 Box::new(u256_underflow::U256Underflow),
                 Box::new(l1_handler::UncheckedL1Handler),
                 Box::new(reentrancy::Reentrancy),
                 Box::new(felt252_overflow::Felt252Overflow),
                 Box::new(library_call::ControlledLibraryCall),
+                Box::new(upgrade::UnprotectedUpgrade),
+                Box::new(integer_overflow::UncheckedIntegerOverflow),
+                // Medium severity
                 Box::new(tx_origin::TxOriginAuth),
+                Box::new(precision::DivideBeforeMultiply),
+                Box::new(storage_access::TaintedStorageKey),
+                // Low severity
                 Box::new(unused::UnusedReturn),
+                Box::new(events::MissingEventEmission),
+                // Info
                 Box::new(unused::DeadCode),
             ],
         }

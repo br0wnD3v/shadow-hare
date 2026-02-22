@@ -53,7 +53,9 @@ impl Detector for Felt252Overflow {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
-        for func in program.external_functions() {
+        // Run on all functions: internal helpers that take felt252 params are
+        // equally dangerous when called with user-controlled values.
+        for func in program.all_functions() {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;

@@ -23,16 +23,16 @@ JSON, or SARIF format.
 
 The built-in registry currently runs 8 detectors (deterministic output order):
 
-| Detector ID | Severity | Confidence | Core Trigger |
-|---|---|---|---|
-| `u256_underflow` | High | Medium | Overflowing subtraction libfunc with only a single branch (unchecked path) |
-| `unchecked_l1_handler` | High | High | L1 handler where inferred `from_address` is not used in validation/comparison |
-| `reentrancy` | High | Medium | Storage read -> external call -> storage write in entrypoint functions |
-| `felt252_overflow` | High | Low | Tainted felt252 arithmetic with no range-check libfunc observed |
-| `controlled_library_call` | High | Medium | `library_call*` receives tainted/user-controlled arguments |
-| `tx_origin_auth` | Medium | Medium | Values tainted from `get_tx_info`/`get_execution_info` reach auth-like checks |
-| `unused_return` | Low | High | Invocation results are never read later in the function |
-| `dead_code` | Info | Medium | Non-entrypoint function appears unreferenced (debug-info-dependent heuristic) |
+| Detector ID               | Severity | Confidence | Core Trigger                                                                  |
+| ------------------------- | -------- | ---------- | ----------------------------------------------------------------------------- |
+| `u256_underflow`          | High     | Medium     | Overflowing subtraction libfunc with only a single branch (unchecked path)    |
+| `unchecked_l1_handler`    | High     | High       | L1 handler where inferred `from_address` is not used in validation/comparison |
+| `reentrancy`              | High     | Medium     | Storage read -> external call -> storage write in entrypoint functions        |
+| `felt252_overflow`        | High     | Low        | Tainted felt252 arithmetic with no range-check libfunc observed               |
+| `controlled_library_call` | High     | Medium     | `library_call*` receives tainted/user-controlled arguments                    |
+| `tx_origin_auth`          | Medium   | Medium     | Values tainted from `get_tx_info`/`get_execution_info` reach auth-like checks |
+| `unused_return`           | Low      | High       | Invocation results are never read later in the function                       |
+| `dead_code`               | Info     | Medium     | Non-entrypoint function appears unreferenced (debug-info-dependent heuristic) |
 
 ## CLI
 

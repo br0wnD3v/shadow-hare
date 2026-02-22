@@ -244,3 +244,161 @@ fn no_panic_on_empty_program() {
         }
     }
 }
+
+// ── Seeded fixture helpers ────────────────────────────────────────────────────
+
+fn seeded_fixture(subdir: &str, name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("CARGO_MANIFEST_DIR has a parent")
+        .join("target_contracts")
+        .join("seeded")
+        .join(subdir)
+        .join(name)
+}
+
+/// Load a seeded fixture and return (detector_ids_that_fired, total_finding_count).
+fn run_seeded(subdir: &str, name: &str) -> (Vec<String>, usize) {
+    let path = seeded_fixture(subdir, name);
+    let matrix = CompatibilityMatrix::default();
+    let artifact = sierra_loader::load_artifact(&path, &matrix)
+        .unwrap_or_else(|e| panic!("Failed to load seeded/{subdir}/{name}: {e}"));
+    let program = ProgramIR::from_artifact(artifact);
+    let registry = DetectorRegistry::all();
+    let mut config = AnalyzerConfig::default();
+    config.min_severity = Severity::Info; // capture Info-level (dead_code)
+    let (findings, _warnings) = registry.run_all(&program, &config);
+    let detector_ids: Vec<String> = findings.iter().map(|f| f.detector_id.clone()).collect();
+    let count = findings.len();
+    (detector_ids, count)
+}
+
+// ── Pure fixtures — exactly one detector each ─────────────────────────────────
+
+#[test]
+fn seeded_pure_felt252_overflow_fires() {
+    let (ids, count) = run_seeded("pure", "felt252_overflow.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"felt252_overflow".to_string()), "felt252_overflow not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_controlled_library_call_fires() {
+    let (ids, count) = run_seeded("pure", "controlled_library_call.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"controlled_library_call".to_string()),
+        "controlled_library_call not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_tx_origin_auth_fires() {
+    let (ids, count) = run_seeded("pure", "tx_origin_auth.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"tx_origin_auth".to_string()), "tx_origin_auth not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_unused_return_fires() {
+    let (ids, count) = run_seeded("pure", "unused_return.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"unused_return".to_string()), "unused_return not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_dead_code_fires() {
+    let (ids, count) = run_seeded("pure", "dead_code.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"dead_code".to_string()), "dead_code not in {ids:?}");
+}
+
+// ── Compound fixtures — two detectors each ────────────────────────────────────
+
+/// zkLend-style: flash loan (reentrancy) + felt252 accumulator overflow
+#[test]
+fn seeded_compound_zklend_flash_loan_fires() {
+    let (ids, count) = run_seeded("compound", "zklend_flash_loan_style.sierra.json");
+    assert_eq!(count, 2, "Expected exactly 2 findings, got {count}: {ids:?}");
+    assert!(ids.contains(&"reentrancy".to_string()), "reentrancy not in {ids:?}");
+    assert!(ids.contains(&"felt252_overflow".to_string()), "felt252_overflow not in {ids:?}");
+}
+
+/// Proxy upgrade attack: user-controlled class_hash + orphaned auth gate (dead code)
+#[test]
+fn seeded_compound_proxy_upgrade_fires() {
+    let (ids, count) = run_seeded("compound", "proxy_upgrade_attack.sierra.json");
+    assert_eq!(count, 2, "Expected exactly 2 findings, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"controlled_library_call".to_string()),
+        "controlled_library_call not in {ids:?}"
+    );
+    assert!(ids.contains(&"dead_code".to_string()), "dead_code not in {ids:?}");
+}
+
+/// L1 bridge: missing from_address validation + silently dropped call result
+#[test]
+fn seeded_compound_l1_bridge_fires() {
+    let (ids, count) = run_seeded("compound", "l1_bridge_vulnerable.sierra.json");
+    assert_eq!(count, 2, "Expected exactly 2 findings, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_l1_handler".to_string()),
+        "unchecked_l1_handler not in {ids:?}"
+    );
+    assert!(ids.contains(&"unused_return".to_string()), "unused_return not in {ids:?}");
+}
+
+/// AMM swap: tx.origin authentication + CEI-violating reentrancy
+#[test]
+fn seeded_compound_amm_swap_fires() {
+    let (ids, count) = run_seeded("compound", "amm_swap_vulnerable.sierra.json");
+    assert_eq!(count, 2, "Expected exactly 2 findings, got {count}: {ids:?}");
+    assert!(ids.contains(&"reentrancy".to_string()), "reentrancy not in {ids:?}");
+    assert!(ids.contains(&"tx_origin_auth".to_string()), "tx_origin_auth not in {ids:?}");
+}
+
+// ── New detector pure fixtures ─────────────────────────────────────────────
+
+#[test]
+fn seeded_pure_unprotected_upgrade_fires() {
+    let (ids, count) = run_seeded("pure", "unprotected_upgrade.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"unprotected_upgrade".to_string()), "unprotected_upgrade not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_unchecked_integer_overflow_fires() {
+    let (ids, count) = run_seeded("pure", "unchecked_integer_overflow.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_integer_overflow".to_string()),
+        "unchecked_integer_overflow not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_divide_before_multiply_fires() {
+    let (ids, count) = run_seeded("pure", "divide_before_multiply.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"divide_before_multiply".to_string()),
+        "divide_before_multiply not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_tainted_storage_key_fires() {
+    let (ids, count) = run_seeded("pure", "tainted_storage_key.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"tainted_storage_key".to_string()), "tainted_storage_key not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_missing_event_emission_fires() {
+    let (ids, count) = run_seeded("pure", "missing_event_emission.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"missing_event_emission".to_string()),
+        "missing_event_emission not in {ids:?}"
+    );
+}
