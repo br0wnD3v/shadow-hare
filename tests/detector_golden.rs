@@ -402,3 +402,167 @@ fn seeded_pure_missing_event_emission_fires() {
         "missing_event_emission not in {ids:?}"
     );
 }
+
+// ── 10 new detector pure fixtures ─────────────────────────────────────────────
+
+#[test]
+fn seeded_pure_integer_truncation_fires() {
+    let (ids, count) = run_seeded("pure", "integer_truncation.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"integer_truncation".to_string()),
+        "integer_truncation not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unchecked_address_cast_fires() {
+    let (ids, count) = run_seeded("pure", "unchecked_address_cast.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_address_cast".to_string()),
+        "unchecked_address_cast not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unchecked_array_access_fires() {
+    let (ids, count) = run_seeded("pure", "unchecked_array_access.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_array_access".to_string()),
+        "unchecked_array_access not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_oracle_price_manipulation_fires() {
+    let (ids, count) = run_seeded("pure", "oracle_price_manipulation.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"oracle_price_manipulation".to_string()),
+        "oracle_price_manipulation not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_block_timestamp_dependence_fires() {
+    let (ids, count) = run_seeded("pure", "block_timestamp_dependence.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"block_timestamp_dependence".to_string()),
+        "block_timestamp_dependence not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_hardcoded_address_fires() {
+    let (ids, count) = run_seeded("pure", "hardcoded_address.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"hardcoded_address".to_string()),
+        "hardcoded_address not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_write_without_caller_check_fires() {
+    let (ids, count) = run_seeded("pure", "write_without_caller_check.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"write_without_caller_check".to_string()),
+        "write_without_caller_check not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_missing_nonce_validation_fires() {
+    let (ids, count) = run_seeded("pure", "missing_nonce_validation.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"missing_nonce_validation".to_string()),
+        "missing_nonce_validation not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_multiple_external_calls_fires() {
+    let (ids, count) = run_seeded("pure", "multiple_external_calls.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"multiple_external_calls".to_string()),
+        "multiple_external_calls not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unchecked_l1_message_fires() {
+    let (ids, count) = run_seeded("pure", "unchecked_l1_message.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_l1_message".to_string()),
+        "unchecked_l1_message not in {ids:?}"
+    );
+}
+
+// ── L1<->L2 messaging detectors ───────────────────────────────────────────────
+
+#[test]
+fn seeded_pure_l2_to_l1_tainted_destination_fires() {
+    let (ids, count) = run_seeded("pure", "l2_to_l1_tainted_destination.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l2_to_l1_tainted_destination".to_string()),
+        "l2_to_l1_tainted_destination not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_l1_handler_unchecked_amount_fires() {
+    let (ids, count) = run_seeded("pure", "l1_handler_unchecked_amount.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l1_handler_unchecked_amount".to_string()),
+        "l1_handler_unchecked_amount not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_l1_handler_payload_to_storage_fires() {
+    let (ids, count) = run_seeded("pure", "l1_handler_payload_to_storage.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l1_handler_payload_to_storage".to_string()),
+        "l1_handler_payload_to_storage not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_l2_to_l1_double_send_fires() {
+    let (ids, count) = run_seeded("pure", "l2_to_l1_double_send.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l2_to_l1_double_send".to_string()),
+        "l2_to_l1_double_send not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_l1_handler_unchecked_selector_fires() {
+    let (ids, count) = run_seeded("pure", "l1_handler_unchecked_selector.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l1_handler_unchecked_selector".to_string()),
+        "l1_handler_unchecked_selector not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_l2_to_l1_unverified_amount_fires() {
+    let (ids, count) = run_seeded("pure", "l2_to_l1_unverified_amount.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"l2_to_l1_unverified_amount".to_string()),
+        "l2_to_l1_unverified_amount not in {ids:?}"
+    );
+}

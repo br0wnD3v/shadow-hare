@@ -101,6 +101,15 @@ fn classify_function(idx: usize, func: &Function, entry_points: &EntryPoints) ->
     if name.contains("::__view") || name.ends_with("_view") {
         return FunctionKind::View;
     }
+    // Starknet account protocol entry points are External even without
+    // the ::__external:: prefix in their debug name.
+    if name.ends_with("__execute__")
+        || name.ends_with("__validate__")
+        || name.ends_with("__validate_declare__")
+        || name.ends_with("__validate_deploy__")
+    {
+        return FunctionKind::External;
+    }
 
     FunctionKind::Internal
 }

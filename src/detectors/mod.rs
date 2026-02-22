@@ -4,16 +4,32 @@ use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
 
+pub mod address_cast;
+pub mod array_access;
 pub mod events;
 pub mod felt252_overflow;
+pub mod hardcoded;
 pub mod integer_overflow;
+pub mod l1_amount;
 pub mod l1_handler;
+pub mod l1_message;
+pub mod l1_selector;
+pub mod l1_storage;
+pub mod l2l1_amount;
+pub mod l2l1_dest;
+pub mod l2l1_double;
 pub mod library_call;
+pub mod multi_call;
+pub mod nonce;
+pub mod oracle;
 pub mod precision;
 pub mod reentrancy;
 pub mod storage_access;
+pub mod timestamp;
+pub mod truncation;
 pub mod tx_origin;
 pub mod u256_underflow;
+pub mod unchecked_write;
 pub mod unused;
 pub mod upgrade;
 
@@ -180,10 +196,28 @@ impl DetectorRegistry {
                 Box::new(library_call::ControlledLibraryCall),
                 Box::new(upgrade::UnprotectedUpgrade),
                 Box::new(integer_overflow::UncheckedIntegerOverflow),
+                Box::new(truncation::IntegerTruncation),
+                Box::new(address_cast::UncheckedAddressCast),
+                Box::new(array_access::UncheckedArrayAccess),
+                Box::new(oracle::OraclePriceManipulation),
+                Box::new(nonce::MissingNonceValidation),
+                Box::new(unchecked_write::WriteWithoutCallerCheck),
+                // L1<->L2 messaging — High
+                Box::new(l2l1_dest::L2ToL1TaintedDestination),
+                Box::new(l1_amount::L1HandlerUncheckedAmount),
+                Box::new(l1_storage::L1HandlerPayloadToStorage),
+                Box::new(l1_selector::L1HandlerUncheckedSelector),
+                Box::new(l2l1_amount::L2ToL1UnverifiedAmount),
                 // Medium severity
                 Box::new(tx_origin::TxOriginAuth),
                 Box::new(precision::DivideBeforeMultiply),
                 Box::new(storage_access::TaintedStorageKey),
+                Box::new(hardcoded::HardcodedAddress),
+                Box::new(timestamp::BlockTimestampDependence),
+                Box::new(multi_call::MultipleExternalCalls),
+                Box::new(l1_message::UncheckedL1Message),
+                // L1<->L2 messaging — Medium
+                Box::new(l2l1_double::L2ToL1DoubleSend),
                 // Low severity
                 Box::new(unused::UnusedReturn),
                 Box::new(events::MissingEventEmission),
