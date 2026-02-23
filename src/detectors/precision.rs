@@ -11,15 +11,20 @@ use crate::loader::CompatibilityTier;
 /// is used as an operand in a subsequent multiplication.
 ///
 /// Integer division truncates towards zero. When the quotient is then
-/// multiplied, the truncation error is amplified. This is a classic DeFi
-/// precision-loss bug — the pattern behind the zkLend Feb 2025 exploit where
-/// accumulator division + multiplication allowed the pool state to diverge.
+/// multiplied, the truncation error is amplified. This is a general integer
+/// precision-loss class in on-chain arithmetic, independent of any specific
+/// protocol implementation.
 ///
 /// Pattern:
 ///   v_quot = u256_safe_divmod(a, b)      // quotient is truncated
 ///   v_scaled = u256_wide_mul(v_quot, c)  // error amplified
 ///
 /// Safe pattern: multiply first, then divide.
+///
+/// Scope note:
+/// This detector currently targets divide-then-multiply ordering on fixed-width
+/// integer paths. Other precision-risk families (fixed-point scaling mistakes,
+/// rounding policy bugs, etc.) should be covered by dedicated detectors.
 pub struct DivideBeforeMultiply;
 
 /// Division libfuncs that produce truncated integer quotients.
@@ -29,8 +34,6 @@ const DIV_LIBFUNCS: &[&str] = &[
     "u64_safe_divmod",
     "u32_safe_divmod",
     "u8_safe_divmod",
-    // felt252 has no integer division but flag u256/u128 patterns which are common in DeFi
-    "integer_division",
 ];
 
 /// Multiplication libfuncs that represent *business-logic* multiplications.
@@ -68,7 +71,7 @@ impl Detector for DivideBeforeMultiply {
     fn description(&self) -> &'static str {
         "Division result used in a subsequent multiplication. Integer division \
          truncates, and the error is amplified when multiplied. \
-         Reorder to multiply first, then divide (accumulator pattern)."
+         Reorder to multiply first, then divide."
     }
 
     fn requirements(&self) -> DetectorRequirements {

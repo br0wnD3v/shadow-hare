@@ -14,7 +14,6 @@ use crate::loader::CompatibilityTier;
 pub struct TxOriginAuth;
 
 const TX_INFO_LIBFUNCS: &[&str] = &["get_tx_info", "get_execution_info"];
-const CALLER_LIBFUNCS: &[&str] = &["get_caller_address"];
 const AUTH_LIBFUNCS: &[&str] = &[
     "assert_eq",
     "assert_ne",

@@ -100,6 +100,44 @@ fn reentrancy_detects_read_call_write_pattern() {
     );
 }
 
+// ── unprotected_upgrade regression tests ─────────────────────────────────────
+
+#[test]
+fn unprotected_upgrade_not_masked_by_arithmetic_mixing() {
+    let program = load_program(fixture("vulnerable/unprotected_upgrade_arithmetic_only.sierra.json"));
+    let registry = DetectorRegistry::all();
+    let config = AnalyzerConfig::default();
+    let (findings, _warnings) = registry.run_all(&program, &config);
+
+    let upgrade_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.detector_id == "unprotected_upgrade")
+        .collect();
+
+    assert!(
+        !upgrade_findings.is_empty(),
+        "Expected unprotected_upgrade to fire when caller+storage values are only used in arithmetic, not an auth guard"
+    );
+}
+
+#[test]
+fn unprotected_upgrade_recognizes_storage_owner_from_helper_return() {
+    let program = load_program(fixture("clean/protected_upgrade_helper_owner_read.sierra.json"));
+    let registry = DetectorRegistry::all();
+    let config = AnalyzerConfig::default();
+    let (findings, _warnings) = registry.run_all(&program, &config);
+
+    let upgrade_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.detector_id == "unprotected_upgrade")
+        .collect();
+
+    assert!(
+        upgrade_findings.is_empty(),
+        "unprotected_upgrade should not fire when a helper reads owner from storage and caller performs the auth comparison"
+    );
+}
+
 // ── Severity threshold filtering ──────────────────────────────────────────────
 
 #[test]
@@ -315,10 +353,10 @@ fn seeded_pure_dead_code_fires() {
 
 // ── Compound fixtures — two detectors each ────────────────────────────────────
 
-/// zkLend-style: flash loan (reentrancy) + felt252 accumulator overflow
+/// Lending-style flash loan: reentrancy + felt252 accumulator overflow
 #[test]
-fn seeded_compound_zklend_flash_loan_fires() {
-    let (ids, count) = run_seeded("compound", "zklend_flash_loan_style.sierra.json");
+fn seeded_compound_lending_flash_loan_fires() {
+    let (ids, count) = run_seeded("compound", "lending_flash_loan_style.sierra.json");
     assert_eq!(count, 2, "Expected exactly 2 findings, got {count}: {ids:?}");
     assert!(ids.contains(&"reentrancy".to_string()), "reentrancy not in {ids:?}");
     assert!(ids.contains(&"felt252_overflow".to_string()), "felt252_overflow not in {ids:?}");
