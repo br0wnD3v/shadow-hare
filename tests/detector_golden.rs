@@ -328,6 +328,11 @@ fn run_seeded(subdir: &str, name: &str) -> (Vec<String>, usize) {
     let registry = DetectorRegistry::all();
     let mut config = AnalyzerConfig::default();
     config.min_severity = Severity::Info; // capture Info-level (dead_code)
+    if subdir == "pure" {
+        let detector_id = name.trim_end_matches(".sierra.json").to_string();
+        config.detectors =
+            shadowhare::config::DetectorSelection::Include([detector_id].into_iter().collect());
+    }
     let (findings, _warnings) = registry.run_all(&program, &config);
     let detector_ids: Vec<String> = findings.iter().map(|f| f.detector_id.clone()).collect();
     let count = findings.len();
@@ -509,6 +514,243 @@ fn seeded_pure_missing_event_emission_fires() {
     assert!(
         ids.contains(&"missing_event_emission".to_string()),
         "missing_event_emission not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_arbitrary_token_transfer_fires() {
+    let (ids, count) = run_seeded("pure", "arbitrary_token_transfer.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"arbitrary_token_transfer".to_string()),
+        "arbitrary_token_transfer not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_pyth_unchecked_confidence_fires() {
+    let (ids, count) = run_seeded("pure", "pyth_unchecked_confidence.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"pyth_unchecked_confidence".to_string()),
+        "pyth_unchecked_confidence not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_pyth_unchecked_publishtime_fires() {
+    let (ids, count) = run_seeded("pure", "pyth_unchecked_publishtime.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"pyth_unchecked_publishtime".to_string()),
+        "pyth_unchecked_publishtime not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_pyth_deprecated_function_fires() {
+    let (ids, count) = run_seeded("pure", "pyth_deprecated_function.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"pyth_deprecated_function".to_string()),
+        "pyth_deprecated_function not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_tautological_compare_fires() {
+    let (ids, count) = run_seeded("pure", "tautological_compare.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"tautological_compare".to_string()),
+        "tautological_compare not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unchecked_transfer_fires() {
+    let (ids, count) = run_seeded("pure", "unchecked_transfer.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unchecked_transfer".to_string()),
+        "unchecked_transfer not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_weak_prng_fires() {
+    let (ids, count) = run_seeded("pure", "weak_prng.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"weak_prng".to_string()),
+        "weak_prng not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_tautology_fires() {
+    let (ids, count) = run_seeded("pure", "tautology.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"tautology".to_string()),
+        "tautology not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_calls_loop_fires() {
+    let (ids, count) = run_seeded("pure", "calls_loop.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"calls_loop".to_string()),
+        "calls_loop not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_write_after_write_fires() {
+    let (ids, count) = run_seeded("pure", "write_after_write.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"write_after_write".to_string()),
+        "write_after_write not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_reentrancy_events_fires() {
+    let (ids, count) = run_seeded("pure", "reentrancy_events.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"reentrancy_events".to_string()),
+        "reentrancy_events not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_missing_events_access_control_fires() {
+    let (ids, count) = run_seeded("pure", "missing_events_access_control.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"missing_events_access_control".to_string()),
+        "missing_events_access_control not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_missing_events_arithmetic_fires() {
+    let (ids, count) = run_seeded("pure", "missing_events_arithmetic.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"missing_events_arithmetic".to_string()),
+        "missing_events_arithmetic not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_boolean_equality_fires() {
+    let (ids, count) = run_seeded("pure", "boolean_equality.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"boolean_equality".to_string()),
+        "boolean_equality not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_costly_loop_fires() {
+    let (ids, count) = run_seeded("pure", "costly_loop.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"costly_loop".to_string()),
+        "costly_loop not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_cache_array_length_fires() {
+    let (ids, count) = run_seeded("pure", "cache_array_length.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"cache_array_length".to_string()),
+        "cache_array_length not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_rtlo_fires() {
+    let (ids, count) = run_seeded("pure", "rtlo.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(ids.contains(&"rtlo".to_string()), "rtlo not in {ids:?}");
+}
+
+#[test]
+fn seeded_pure_shadowing_builtin_fires() {
+    let (ids, count) = run_seeded("pure", "shadowing_builtin.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"shadowing_builtin".to_string()),
+        "shadowing_builtin not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_shadowing_local_fires() {
+    let (ids, count) = run_seeded("pure", "shadowing_local.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"shadowing_local".to_string()),
+        "shadowing_local not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_shadowing_state_fires() {
+    let (ids, count) = run_seeded("pure", "shadowing_state.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"shadowing_state".to_string()),
+        "shadowing_state not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_incorrect_erc20_interface_fires() {
+    let (ids, count) = run_seeded("pure", "incorrect_erc20_interface.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"incorrect_erc20_interface".to_string()),
+        "incorrect_erc20_interface not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_incorrect_erc721_interface_fires() {
+    let (ids, count) = run_seeded("pure", "incorrect_erc721_interface.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"incorrect_erc721_interface".to_string()),
+        "incorrect_erc721_interface not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unindexed_event_fires() {
+    let (ids, count) = run_seeded("pure", "unindexed_event.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unindexed_event".to_string()),
+        "unindexed_event not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_unused_state_fires() {
+    let (ids, count) = run_seeded("pure", "unused_state.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"unused_state".to_string()),
+        "unused_state not in {ids:?}"
     );
 }
 

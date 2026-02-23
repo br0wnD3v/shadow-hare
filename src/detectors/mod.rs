@@ -6,7 +6,15 @@ use crate::loader::CompatibilityTier;
 
 pub mod address_cast;
 pub mod array_access;
+pub mod boolean_equality;
+pub mod cache_array_length;
+pub mod calls_loop;
+pub mod costly_loop;
+pub mod erc20_interface;
+pub mod erc721_interface;
 pub mod events;
+pub mod events_access_control;
+pub mod events_arithmetic;
 pub mod felt252_overflow;
 pub mod hardcoded;
 pub mod integer_overflow;
@@ -23,17 +31,31 @@ pub mod multi_call;
 pub mod nonce;
 pub mod oracle;
 pub mod precision;
+pub mod pyth;
 pub mod reentrancy;
+pub mod reentrancy_events;
+pub mod rtlo;
+pub mod shadowing_builtin;
+pub mod shadowing_local;
+pub mod shadowing_state;
 pub mod signature_replay;
 pub mod storage_access;
+pub mod tautology;
+pub mod tautology_condition;
 pub mod timestamp;
+pub mod token_transfer;
 pub mod truncation;
 pub mod tx_origin;
 pub mod u256_underflow;
+pub mod unchecked_transfer;
 pub mod unchecked_write;
+pub mod unindexed_event;
 pub mod unused;
+pub mod unused_state;
 pub mod upgrade;
 pub mod view_state_modification;
+pub mod weak_prng;
+pub mod write_after_write;
 pub mod zero_address;
 
 // ── Finding model ────────────────────────────────────────────────────────────
@@ -205,7 +227,10 @@ impl DetectorRegistry {
                 Box::new(oracle::OraclePriceManipulation),
                 Box::new(nonce::MissingNonceValidation),
                 Box::new(signature_replay::SignatureReplay),
+                Box::new(token_transfer::ArbitraryTokenTransfer),
                 Box::new(unchecked_write::WriteWithoutCallerCheck),
+                Box::new(unchecked_transfer::UncheckedTransfer),
+                Box::new(rtlo::Rtlo),
                 // L1<->L2 messaging — High
                 Box::new(l2l1_dest::L2ToL1TaintedDestination),
                 Box::new(l1_amount::L1HandlerUncheckedAmount),
@@ -218,16 +243,37 @@ impl DetectorRegistry {
                 Box::new(storage_access::TaintedStorageKey),
                 Box::new(hardcoded::HardcodedAddress),
                 Box::new(timestamp::BlockTimestampDependence),
+                Box::new(weak_prng::WeakPrng),
+                Box::new(pyth::PythUncheckedConfidence),
+                Box::new(pyth::PythUncheckedPublishtime),
+                Box::new(pyth::PythDeprecatedFunction),
+                Box::new(tautology::TautologicalCompare),
+                Box::new(tautology_condition::TautologyCondition),
                 Box::new(multi_call::MultipleExternalCalls),
                 Box::new(l1_message::UncheckedL1Message),
                 Box::new(view_state_modification::ViewStateModification),
+                Box::new(erc20_interface::IncorrectErc20Interface),
+                Box::new(erc721_interface::IncorrectErc721Interface),
                 // L1<->L2 messaging — Medium
                 Box::new(l2l1_double::L2ToL1DoubleSend),
                 // Low severity
+                Box::new(calls_loop::CallsLoop),
+                Box::new(write_after_write::WriteAfterWrite),
+                Box::new(reentrancy_events::ReentrancyEvents),
                 Box::new(unused::UnusedReturn),
                 Box::new(events::MissingEventEmission),
+                Box::new(events_access_control::MissingEventsAccessControl),
+                Box::new(events_arithmetic::MissingEventsArithmetic),
                 Box::new(zero_address::MissingZeroAddressCheck),
+                Box::new(shadowing_builtin::ShadowingBuiltin),
+                Box::new(shadowing_local::ShadowingLocal),
+                Box::new(shadowing_state::ShadowingState),
                 // Info
+                Box::new(boolean_equality::BooleanEquality),
+                Box::new(costly_loop::CostlyLoop),
+                Box::new(cache_array_length::CacheArrayLength),
+                Box::new(unindexed_event::UnindexedEvent),
+                Box::new(unused_state::UnusedState),
                 Box::new(unused::DeadCode),
             ],
         }

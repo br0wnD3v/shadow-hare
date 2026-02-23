@@ -21,12 +21,12 @@ JSON, or SARIF format.
 
 ## Current Detector Set
 
-The built-in registry currently runs 32 detectors in deterministic order.
+The built-in registry currently runs 56 detectors in deterministic order.
 
-- High: `u256_underflow`, `unchecked_l1_handler`, `reentrancy`, `controlled_library_call`, `unprotected_upgrade`, `unchecked_integer_overflow`, `integer_truncation`, `unchecked_address_cast`, `unchecked_array_access`, `oracle_price_manipulation`, `missing_nonce_validation`, `signature_replay`, `write_without_caller_check`, `l2_to_l1_tainted_destination`, `l1_handler_unchecked_amount`, `l1_handler_payload_to_storage`, `l1_handler_unchecked_selector`, `l2_to_l1_unverified_amount`
-- Medium: `felt252_overflow`, `tx_origin_auth`, `divide_before_multiply`, `tainted_storage_key`, `hardcoded_address`, `block_timestamp_dependence`, `multiple_external_calls`, `unchecked_l1_message`, `view_state_modification`, `l2_to_l1_double_send`
-- Low: `unused_return`, `missing_event_emission`, `missing_zero_address_check`
-- Info: `dead_code`
+- High: `u256_underflow`, `unchecked_l1_handler`, `reentrancy`, `controlled_library_call`, `unprotected_upgrade`, `unchecked_integer_overflow`, `integer_truncation`, `unchecked_address_cast`, `unchecked_array_access`, `oracle_price_manipulation`, `missing_nonce_validation`, `signature_replay`, `arbitrary_token_transfer`, `write_without_caller_check`, `rtlo`, `l2_to_l1_tainted_destination`, `l1_handler_unchecked_amount`, `l1_handler_payload_to_storage`, `l1_handler_unchecked_selector`, `l2_to_l1_unverified_amount`
+- Medium: `felt252_overflow`, `tx_origin_auth`, `divide_before_multiply`, `tainted_storage_key`, `hardcoded_address`, `block_timestamp_dependence`, `unchecked_transfer`, `weak_prng`, `pyth_unchecked_confidence`, `pyth_unchecked_publishtime`, `pyth_deprecated_function`, `tautological_compare`, `tautology`, `multiple_external_calls`, `unchecked_l1_message`, `view_state_modification`, `l2_to_l1_double_send`
+- Low: `incorrect_erc20_interface`, `incorrect_erc721_interface`, `calls_loop`, `write_after_write`, `reentrancy_events`, `unused_return`, `missing_event_emission`, `missing_events_access_control`, `missing_events_arithmetic`, `missing_zero_address_check`, `shadowing_builtin`, `shadowing_local`, `shadowing_state`
+- Info: `boolean_equality`, `costly_loop`, `cache_array_length`, `unindexed_event`, `unused_state`, `dead_code`
 
 Source of truth for detector behavior and rationale is `docs/RULES.md`.
 Use `shadowhare list-detectors` for runtime metadata (severity/confidence/description).
