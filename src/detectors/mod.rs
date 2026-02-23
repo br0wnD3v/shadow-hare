@@ -24,6 +24,7 @@ pub mod nonce;
 pub mod oracle;
 pub mod precision;
 pub mod reentrancy;
+pub mod signature_replay;
 pub mod storage_access;
 pub mod timestamp;
 pub mod truncation;
@@ -32,6 +33,8 @@ pub mod u256_underflow;
 pub mod unchecked_write;
 pub mod unused;
 pub mod upgrade;
+pub mod view_state_modification;
+pub mod zero_address;
 
 // ── Finding model ────────────────────────────────────────────────────────────
 
@@ -201,6 +204,7 @@ impl DetectorRegistry {
                 Box::new(array_access::UncheckedArrayAccess),
                 Box::new(oracle::OraclePriceManipulation),
                 Box::new(nonce::MissingNonceValidation),
+                Box::new(signature_replay::SignatureReplay),
                 Box::new(unchecked_write::WriteWithoutCallerCheck),
                 // L1<->L2 messaging — High
                 Box::new(l2l1_dest::L2ToL1TaintedDestination),
@@ -216,11 +220,13 @@ impl DetectorRegistry {
                 Box::new(timestamp::BlockTimestampDependence),
                 Box::new(multi_call::MultipleExternalCalls),
                 Box::new(l1_message::UncheckedL1Message),
+                Box::new(view_state_modification::ViewStateModification),
                 // L1<->L2 messaging — Medium
                 Box::new(l2l1_double::L2ToL1DoubleSend),
                 // Low severity
                 Box::new(unused::UnusedReturn),
                 Box::new(events::MissingEventEmission),
+                Box::new(zero_address::MissingZeroAddressCheck),
                 // Info
                 Box::new(unused::DeadCode),
             ],
@@ -276,12 +282,13 @@ impl DetectorRegistry {
 
         (all_findings, all_warnings)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &dyn Detector> {
+        self.detectors.iter().map(|d| d.as_ref())
+    }
 }
 
-fn is_suppressed(
-    finding: &Finding,
-    suppressions: &[crate::config::Suppression],
-) -> bool {
+fn is_suppressed(finding: &Finding, suppressions: &[crate::config::Suppression]) -> bool {
     suppressions.iter().any(|s| {
         s.detector_id == finding.detector_id
             && match &s.location_hash {

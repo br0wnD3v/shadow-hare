@@ -27,6 +27,7 @@ path = "src/scarb_main.rs"
 # Sierra IR parsing
 cairo-lang-sierra = "2.16.0"
 cairo-lang-starknet-classes = "2.16.0"
+cairo-annotations = { version = "0.7.0", features = ["cairo-lang"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

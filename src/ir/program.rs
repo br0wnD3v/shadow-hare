@@ -1,8 +1,9 @@
 use crate::ir::function::FunctionInfo;
 use crate::ir::type_registry::{LibfuncRegistry, TypeRegistry};
 use crate::loader::{
-    CompatibilityTier, EntryPoints, LoadedArtifact, SierraId, Statement,
+    CompatibilityTier, EntryPoints, LoadedArtifact, SierraId, SourceLocation, Statement,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// The primary IR used by all detectors and analysis passes.
@@ -20,6 +21,7 @@ pub struct ProgramIR {
     pub functions: Vec<FunctionInfo>,
     pub statements: Vec<Statement>,
     pub entry_points: EntryPoints,
+    pub statement_locations: HashMap<usize, SourceLocation>,
 }
 
 impl ProgramIR {
@@ -45,6 +47,7 @@ impl ProgramIR {
             functions,
             statements: artifact.program.statements,
             entry_points: artifact.entry_points,
+            statement_locations: artifact.statement_locations,
         }
     }
 
@@ -74,7 +77,9 @@ impl ProgramIR {
     }
 
     pub fn get_libfunc_name<'a>(&'a self, id: &'a SierraId) -> Option<&'a str> {
-        self.libfunc_registry.generic_id(id).or_else(|| id.debug_name.as_deref())
+        self.libfunc_registry
+            .generic_id(id)
+            .or_else(|| id.debug_name.as_deref())
     }
 
     pub fn external_functions(&self) -> impl Iterator<Item = &FunctionInfo> {
@@ -87,6 +92,10 @@ impl ProgramIR {
 
     pub fn all_functions(&self) -> impl Iterator<Item = &FunctionInfo> {
         self.functions.iter()
+    }
+
+    pub fn source_location_for_stmt(&self, stmt_idx: usize) -> Option<&SourceLocation> {
+        self.statement_locations.get(&stmt_idx)
     }
 }
 

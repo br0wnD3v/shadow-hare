@@ -57,11 +57,11 @@ fn sarif_severity_mapping() {
     let json = serde_json::to_value(&sarif).unwrap();
     let results = json["runs"][0]["results"].as_array().unwrap();
 
-    assert_eq!(results[0]["level"].as_str(), Some("error"));   // critical
-    assert_eq!(results[1]["level"].as_str(), Some("error"));   // high
+    assert_eq!(results[0]["level"].as_str(), Some("error")); // critical
+    assert_eq!(results[1]["level"].as_str(), Some("error")); // high
     assert_eq!(results[2]["level"].as_str(), Some("warning")); // medium
-    assert_eq!(results[3]["level"].as_str(), Some("note"));    // low
-    assert_eq!(results[4]["level"].as_str(), Some("note"));    // info
+    assert_eq!(results[3]["level"].as_str(), Some("note")); // low
+    assert_eq!(results[4]["level"].as_str(), Some("note")); // info
 }
 
 #[test]
@@ -84,7 +84,9 @@ fn sarif_rules_deduplicated() {
     ];
     let sarif = build_sarif(&findings, &[]);
     let json = serde_json::to_value(&sarif).unwrap();
-    let rules = json["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+    let rules = json["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
     assert_eq!(rules.len(), 1, "Duplicate rules should be deduplicated");
 }
 

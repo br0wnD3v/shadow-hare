@@ -1,6 +1,8 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use std::collections::HashMap;
+
+use crate::analysis::cfg::{BlockIdx, Cfg};
+use crate::analysis::dataflow::{run_forward, ForwardAnalysis};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -23,6 +25,62 @@ const CALLER_CHECK_LIBFUNCS: &[&str] = &[
     "get_execution_info",
     "get_contract_address",
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+struct WriteGuardState {
+    has_caller_check: bool,
+    has_storage_read: bool,
+}
+
+struct WriteGuardAnalysis<'a> {
+    program: &'a ProgramIR,
+}
+
+impl<'a> ForwardAnalysis for WriteGuardAnalysis<'a> {
+    type Domain = WriteGuardState;
+
+    fn bottom(&self) -> Self::Domain {
+        WriteGuardState::default()
+    }
+
+    fn transfer_stmt(&self, state: &Self::Domain, stmt: &crate::loader::Statement) -> Self::Domain {
+        let inv = match stmt.as_invocation() {
+            Some(inv) => inv,
+            None => return *state,
+        };
+
+        let libfunc_name = self
+            .program
+            .libfunc_registry
+            .generic_id(&inv.libfunc_id)
+            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+            .unwrap_or("");
+
+        let mut next = *state;
+        if CALLER_CHECK_LIBFUNCS
+            .iter()
+            .any(|p| libfunc_name.contains(p))
+        {
+            next.has_caller_check = true;
+        }
+        if self
+            .program
+            .libfunc_registry
+            .is_storage_read(&inv.libfunc_id)
+        {
+            next.has_storage_read = true;
+        }
+        next
+    }
+
+    fn join(&self, a: &Self::Domain, b: &Self::Domain) -> Self::Domain {
+        WriteGuardState {
+            // Keep true only if every incoming path established the guard.
+            has_caller_check: a.has_caller_check && b.has_caller_check,
+            has_storage_read: a.has_storage_read && b.has_storage_read,
+        }
+    }
+}
 
 impl Detector for WriteWithoutCallerCheck {
     fn id(&self) -> &'static str {
@@ -65,44 +123,35 @@ impl Detector for WriteWithoutCallerCheck {
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
+            let end = end.min(program.statements.len());
 
-            let mut has_storage_write = false;
-            let mut has_caller_check = false;
-            let mut has_storage_read = false;
-            let mut first_write_site = 0usize;
+            let analysis = WriteGuardAnalysis { program };
+            let cfg = Cfg::build(&program.statements, start, end);
+            let block_out = run_forward(&analysis, &cfg, &program.statements);
 
-            for (local_idx, stmt) in stmts.iter().enumerate() {
-                let inv = match stmt.as_invocation() {
-                    Some(inv) => inv,
-                    None => continue,
-                };
+            let mut first_unchecked_write_site: Option<usize> = None;
+            for block_id in cfg.topological_order() {
+                let block = &cfg.blocks[block_id];
+                let mut state = block_entry_state(&analysis, &cfg, block_id, &block_out);
 
-                let libfunc_name = program
-                    .libfunc_registry
-                    .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
-                    .unwrap_or("");
-
-                if program.libfunc_registry.is_storage_write(&inv.libfunc_id) {
-                    if !has_storage_write {
-                        first_write_site = start + local_idx;
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    if let Some(inv) = stmt.as_invocation() {
+                        if program.libfunc_registry.is_storage_write(&inv.libfunc_id)
+                            && !state.has_caller_check
+                            && !state.has_storage_read
+                        {
+                            first_unchecked_write_site = Some(match first_unchecked_write_site {
+                                Some(existing) => existing.min(stmt_idx),
+                                None => stmt_idx,
+                            });
+                        }
                     }
-                    has_storage_write = true;
-                }
-
-                if program.libfunc_registry.is_storage_read(&inv.libfunc_id) {
-                    has_storage_read = true;
-                }
-
-                if CALLER_CHECK_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {
-                    has_caller_check = true;
+                    state = analysis.transfer_stmt(&state, stmt);
                 }
             }
 
-            // Only flag functions that write storage with NO caller check AND
-            // NO storage read (a storage read usually implies an ownership lookup).
-            if has_storage_write && !has_caller_check && !has_storage_read {
+            if let Some(first_write_site) = first_unchecked_write_site {
                 findings.push(Finding::new(
                     self.id(),
                     self.severity(),
@@ -127,4 +176,37 @@ impl Detector for WriteWithoutCallerCheck {
 
         (findings, warnings)
     }
+}
+
+fn block_entry_state<A: ForwardAnalysis>(
+    analysis: &A,
+    cfg: &Cfg,
+    block_id: BlockIdx,
+    block_out: &HashMap<BlockIdx, A::Domain>,
+) -> A::Domain {
+    if block_id == cfg.entry {
+        return analysis.bottom();
+    }
+
+    let Some(preds) = cfg.predecessors.get(&block_id) else {
+        return analysis.bottom();
+    };
+    if preds.is_empty() {
+        return analysis.bottom();
+    }
+
+    let mut it = preds.iter();
+    let first = it.next().expect("preds is non-empty");
+    let mut acc = block_out
+        .get(first)
+        .cloned()
+        .unwrap_or_else(|| analysis.bottom());
+    for pred in it {
+        let pred_out = block_out
+            .get(pred)
+            .cloned()
+            .unwrap_or_else(|| analysis.bottom());
+        acc = analysis.join(&acc, &pred_out);
+    }
+    acc
 }

@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::{CompatibilityTier, Statement};
@@ -77,15 +75,13 @@ impl Detector for UncheckedL1Handler {
             // In Sierra, params are numbered starting from 0. The from_address
             // is param variable ID 0 or 1 depending on implicit args.
             // We track all param variables to be safe.
-            let param_var_ids: Vec<u64> =
-                func.raw.params.iter().map(|(id, _)| *id).collect();
+            let param_var_ids: Vec<u64> = func.raw.params.iter().map(|(id, _)| *id).collect();
 
             if param_var_ids.is_empty() {
                 // No parameters — definitely can't validate from_address
                 findings.push(make_finding(
                     self,
                     program,
-                    func.idx,
                     &func.name,
                     None,
                     "L1 handler has no parameters — cannot validate from_address",
@@ -118,7 +114,6 @@ impl Detector for UncheckedL1Handler {
                 findings.push(make_finding(
                     self,
                     program,
-                    func.idx,
                     &func.name,
                     Some(start),
                     &format!(
@@ -150,11 +145,7 @@ fn find_from_address_var(
     params.get(1).map(|(id, _)| *id)
 }
 
-fn is_variable_validated(
-    var: u64,
-    stmts: &[Statement],
-    program: &ProgramIR,
-) -> bool {
+fn is_variable_validated(var: u64, stmts: &[Statement], program: &ProgramIR) -> bool {
     for stmt in stmts {
         let inv = match stmt.as_invocation() {
             Some(inv) => inv,
@@ -188,7 +179,6 @@ fn is_variable_validated(
 fn make_finding(
     detector: &UncheckedL1Handler,
     program: &ProgramIR,
-    func_idx: usize,
     func_name: &str,
     stmt_idx: Option<usize>,
     description: &str,

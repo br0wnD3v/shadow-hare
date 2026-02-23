@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -82,13 +80,8 @@ impl Detector for L1HandlerUncheckedSelector {
             // System (param[0]) and from_address (param[1]) are not treated as
             // attacker-controlled for the selector, though a missing from_address
             // check is a separate issue (unchecked_l1_handler).
-            let mut tainted: HashSet<u64> = func
-                .raw
-                .params
-                .iter()
-                .skip(2)
-                .map(|(id, _)| *id)
-                .collect();
+            let mut tainted: HashSet<u64> =
+                func.raw.params.iter().skip(2).map(|(id, _)| *id).collect();
 
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {

@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -52,15 +50,17 @@ impl Detector for TxOriginAuth {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
-        for func in program.external_functions().filter(|f| !f.is_account_entrypoint()) {
+        for func in program
+            .external_functions()
+            .filter(|f| !f.is_account_entrypoint())
+        {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            let mut tx_info_vars: std::collections::HashSet<u64> =
-                std::collections::HashSet::new();
+            let mut tx_info_vars: std::collections::HashSet<u64> = std::collections::HashSet::new();
             let mut tx_info_site: Option<usize> = None;
 
             for (local_idx, stmt) in stmts.iter().enumerate() {
@@ -84,9 +84,7 @@ impl Detector for TxOriginAuth {
                 }
 
                 // Propagate tx_info taint
-                if !tx_info_vars.is_empty()
-                    && inv.args.iter().any(|a| tx_info_vars.contains(a))
-                {
+                if !tx_info_vars.is_empty() && inv.args.iter().any(|a| tx_info_vars.contains(a)) {
                     for branch in &inv.branches {
                         for r in &branch.results {
                             tx_info_vars.insert(*r);

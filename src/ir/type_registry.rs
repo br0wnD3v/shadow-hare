@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::loader::{SierraId, TypeDeclaration, LibfuncDeclaration};
+use crate::loader::{LibfuncDeclaration, SierraId, TypeDeclaration};
 
 /// Non-panicking type registry. All lookups return Option<T>.
 /// Unknown types produce a warning, never a panic.
@@ -29,7 +29,11 @@ impl TypeRegistry {
             by_name.insert(decl.generic_id.clone(), idx);
         }
 
-        Self { by_id, by_name, declarations }
+        Self {
+            by_id,
+            by_name,
+            declarations,
+        }
     }
 
     pub fn lookup(&self, id: &SierraId) -> Option<&TypeDeclaration> {
@@ -63,11 +67,17 @@ impl TypeRegistry {
     }
 
     pub fn is_felt252(&self, id: &SierraId) -> bool {
-        id.debug_name.as_deref().map(|n| n.contains("felt252")).unwrap_or(false)
+        id.debug_name
+            .as_deref()
+            .map(|n| n.contains("felt252"))
+            .unwrap_or(false)
     }
 
     pub fn is_u256(&self, id: &SierraId) -> bool {
-        id.debug_name.as_deref().map(|n| n.contains("u256")).unwrap_or(false)
+        id.debug_name
+            .as_deref()
+            .map(|n| n.contains("u256"))
+            .unwrap_or(false)
     }
 }
 
@@ -94,7 +104,11 @@ impl LibfuncRegistry {
             by_name.insert(decl.generic_id.clone(), idx);
         }
 
-        Self { by_id, by_name, declarations }
+        Self {
+            by_id,
+            by_name,
+            declarations,
+        }
     }
 
     pub fn lookup(&self, id: &SierraId) -> Option<&LibfuncDeclaration> {
@@ -159,7 +173,10 @@ mod tests {
     use crate::loader::SierraId;
 
     fn make_id(id: u64, name: &str) -> SierraId {
-        SierraId { id: Some(id), debug_name: Some(name.to_string()) }
+        SierraId {
+            id: Some(id),
+            debug_name: Some(name.to_string()),
+        }
     }
 
     #[test]
@@ -179,7 +196,10 @@ mod tests {
     #[test]
     fn type_registry_unknown_returns_none() {
         let reg = TypeRegistry::build(vec![]);
-        let id = SierraId { id: Some(999), debug_name: Some("unknown_type".to_string()) };
+        let id = SierraId {
+            id: Some(999),
+            debug_name: Some("unknown_type".to_string()),
+        };
         assert!(reg.lookup(&id).is_none()); // must not panic
     }
 

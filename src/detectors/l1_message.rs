@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -21,10 +19,7 @@ pub struct UncheckedL1Message;
 
 const SEND_L1_LIBFUNCS: &[&str] = &["send_message_to_l1_syscall", "send_message_to_l1"];
 
-const CALLER_CHECK_LIBFUNCS: &[&str] = &[
-    "get_caller_address",
-    "get_execution_info",
-];
+const CALLER_CHECK_LIBFUNCS: &[&str] = &["get_caller_address", "get_execution_info"];
 
 impl Detector for UncheckedL1Message {
     fn id(&self) -> &'static str {
@@ -86,7 +81,10 @@ impl Detector for UncheckedL1Message {
                     has_send_l1 = true;
                 }
 
-                if CALLER_CHECK_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {
+                if CALLER_CHECK_LIBFUNCS
+                    .iter()
+                    .any(|p| libfunc_name.contains(p))
+                {
                     has_caller_check = true;
                 }
             }

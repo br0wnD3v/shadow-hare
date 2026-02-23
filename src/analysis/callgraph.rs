@@ -46,8 +46,7 @@ impl CallGraph {
             .filter_map(|(i, f)| f.raw.id.debug_name.clone().map(|n| (n, i)))
             .collect();
 
-        let mut edges: HashMap<usize, Vec<usize>> =
-            (0..n_funcs).map(|i| (i, Vec::new())).collect();
+        let mut edges: HashMap<usize, Vec<usize>> = (0..n_funcs).map(|i| (i, Vec::new())).collect();
 
         for func in &program.functions {
             let (start, end) = program.function_statement_range(func.idx);
@@ -86,7 +85,12 @@ impl CallGraph {
             }
         }
 
-        Self { edges, n_funcs, fn_by_id, fn_by_debug }
+        Self {
+            edges,
+            n_funcs,
+            fn_by_id,
+            fn_by_debug,
+        }
     }
 
     /// Resolve a `function_call` libfunc_id to the callee's function index.
@@ -222,6 +226,16 @@ pub struct FunctionSummaries {
     /// that bypasses the range-check gate — e.g. a helper that does unchecked
     /// felt252_mul on a parameter passed from an external entry point.
     pub has_unsafe_felt252_arith_on_param: Vec<bool>,
+
+    /// Representative inter-procedural taint chain for raw storage-address
+    /// conversion. Each entry is an ordered list of steps from a tainted
+    /// parameter to the dangerous sink class.
+    pub raw_storage_taint_chains: Vec<Vec<String>>,
+
+    /// Representative inter-procedural taint chain for unchecked felt252
+    /// arithmetic. Each entry is an ordered list of steps from a tainted
+    /// parameter to the arithmetic operation.
+    pub felt252_taint_chains: Vec<Vec<String>>,
 }
 
 impl FunctionSummaries {
@@ -230,6 +244,8 @@ impl FunctionSummaries {
         let n = program.functions.len();
         let mut has_raw = vec![false; n];
         let mut has_felt_arith = vec![false; n];
+        let mut raw_chains: Vec<Vec<String>> = vec![Vec::new(); n];
+        let mut felt_chains: Vec<Vec<String>> = vec![Vec::new(); n];
 
         for func_idx in callgraph.bottom_up_order() {
             if func_idx >= n {
@@ -245,17 +261,18 @@ impl FunctionSummaries {
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
             // Seed taint from all parameter variables
-            let mut tainted: HashSet<u64> =
-                func.raw.params.iter().map(|(id, _)| *id).collect();
+            let mut tainted: HashSet<u64> = func.raw.params.iter().map(|(id, _)| *id).collect();
 
             let mut found_raw = false;
             let mut found_felt_arith = false;
+            let mut raw_chain: Option<Vec<String>> = None;
+            let mut felt_chain: Option<Vec<String>> = None;
             // Whether a range check appeared BEFORE each arith op — tracked globally
             // for the function (conservative: any range check anywhere in the function
             // suppresses the flag, consistent with the intra-procedural detector).
             let mut has_range_check = false;
 
-            for stmt in stmts {
+            for (local_idx, stmt) in stmts.iter().enumerate() {
                 let inv = match stmt {
                     Statement::Invocation(inv) => inv,
                     _ => continue,
@@ -268,7 +285,10 @@ impl FunctionSummaries {
                     .unwrap_or("");
 
                 // Range checks suppress felt252 arithmetic findings
-                if FELT252_RANGE_CHECK_LIBFUNCS.iter().any(|s| libfunc_name.contains(s)) {
+                if FELT252_RANGE_CHECK_LIBFUNCS
+                    .iter()
+                    .any(|s| libfunc_name.contains(s))
+                {
                     has_range_check = true;
                 }
 
@@ -280,10 +300,11 @@ impl FunctionSummaries {
                 let any_arg_tainted = inv.args.iter().any(|a| tainted.contains(a));
 
                 // Detect: raw storage address conversion with tainted argument
-                if any_arg_tainted
-                    && RAW_ADDR_LIBFUNCS.iter().any(|s| libfunc_name.contains(s))
-                {
+                if any_arg_tainted && RAW_ADDR_LIBFUNCS.iter().any(|s| libfunc_name.contains(s)) {
                     found_raw = true;
+                    if raw_chain.is_none() {
+                        raw_chain = Some(vec![format!("{}@{}", libfunc_name, start + local_idx)]);
+                    }
                     for branch in &inv.branches {
                         for r in &branch.results {
                             tainted.insert(*r);
@@ -295,9 +316,14 @@ impl FunctionSummaries {
                 // Detect: felt252 arithmetic on tainted value without range check
                 if any_arg_tainted
                     && !has_range_check
-                    && FELT252_ARITH_LIBFUNCS.iter().any(|s| libfunc_name.contains(s))
+                    && FELT252_ARITH_LIBFUNCS
+                        .iter()
+                        .any(|s| libfunc_name.contains(s))
                 {
                     found_felt_arith = true;
+                    if felt_chain.is_none() {
+                        felt_chain = Some(vec![format!("{}@{}", libfunc_name, start + local_idx)]);
+                    }
                 }
 
                 // Inter-procedural: function_call — fold callee summaries
@@ -310,6 +336,22 @@ impl FunctionSummaries {
                                 if has_raw[callee_idx] {
                                     // Callee produces raw storage addresses from tainted input.
                                     found_raw = true;
+                                    if raw_chain.is_none() {
+                                        let callee_name = program
+                                            .functions
+                                            .get(callee_idx)
+                                            .map(|f| f.name.clone())
+                                            .unwrap_or_else(|| format!("func_{callee_idx}"));
+                                        let mut chain = vec![format!(
+                                            "function_call->{}@{}",
+                                            callee_name,
+                                            start + local_idx
+                                        )];
+                                        if let Some(callee_chain) = raw_chains.get(callee_idx) {
+                                            chain.extend(callee_chain.iter().cloned());
+                                        }
+                                        raw_chain = Some(chain);
+                                    }
                                     for branch in &inv.branches {
                                         for r in &branch.results {
                                             tainted.insert(*r);
@@ -319,6 +361,22 @@ impl FunctionSummaries {
                                 if has_felt_arith[callee_idx] && !has_range_check {
                                     // Callee performs unchecked felt252 arithmetic on user input.
                                     found_felt_arith = true;
+                                    if felt_chain.is_none() {
+                                        let callee_name = program
+                                            .functions
+                                            .get(callee_idx)
+                                            .map(|f| f.name.clone())
+                                            .unwrap_or_else(|| format!("func_{callee_idx}"));
+                                        let mut chain = vec![format!(
+                                            "function_call->{}@{}",
+                                            callee_name,
+                                            start + local_idx
+                                        )];
+                                        if let Some(callee_chain) = felt_chains.get(callee_idx) {
+                                            chain.extend(callee_chain.iter().cloned());
+                                        }
+                                        felt_chain = Some(chain);
+                                    }
                                 }
                             }
                         }
@@ -339,11 +397,15 @@ impl FunctionSummaries {
 
             has_raw[func_idx] = found_raw;
             has_felt_arith[func_idx] = found_felt_arith;
+            raw_chains[func_idx] = raw_chain.unwrap_or_default();
+            felt_chains[func_idx] = felt_chain.unwrap_or_default();
         }
 
         Self {
             has_raw_storage_from_tainted_param: has_raw,
             has_unsafe_felt252_arith_on_param: has_felt_arith,
+            raw_storage_taint_chains: raw_chains,
+            felt252_taint_chains: felt_chains,
         }
     }
 }
@@ -380,8 +442,7 @@ mod tests {
         };
         let order = cg.bottom_up_order();
         // 2 must come before 1, 1 before 0
-        let pos: HashMap<usize, usize> =
-            order.iter().enumerate().map(|(i, &f)| (f, i)).collect();
+        let pos: HashMap<usize, usize> = order.iter().enumerate().map(|(i, &f)| (f, i)).collect();
         assert!(pos[&2] < pos[&1]);
         assert!(pos[&1] < pos[&0]);
     }

@@ -43,7 +43,10 @@ pub fn run_forward<A: ForwardAnalysis>(
 
             // Compute entry state: join all predecessor exit states
             let in_state = if block_id == cfg.entry {
-                block_in.get(&block_id).cloned().unwrap_or_else(|| analysis.bottom())
+                block_in
+                    .get(&block_id)
+                    .cloned()
+                    .unwrap_or_else(|| analysis.bottom())
             } else {
                 let preds = cfg.predecessors.get(&block_id);
                 let state = match preds {

@@ -18,10 +18,7 @@ pub struct ReentrancyEvidence {
 ///
 /// Pattern: storage read → external call → storage write
 /// in sequential program order (not just dominance — conservative).
-pub fn check_reentrancy(
-    program: &ProgramIR,
-    func_idx: usize,
-) -> Vec<ReentrancyEvidence> {
+pub fn check_reentrancy(program: &ProgramIR, func_idx: usize) -> Vec<ReentrancyEvidence> {
     let (start, end) = program.function_statement_range(func_idx);
     if start >= end || end > program.statements.len() {
         return Vec::new();
@@ -41,14 +38,14 @@ pub fn check_reentrancy(
 
     for &call_local in &calls {
         // Look for any storage read before this call
-        let read_before = storage.iter().find(|a| {
-            matches!(a, StorageAccess::Read { stmt_idx } if *stmt_idx < call_local)
-        });
+        let read_before = storage
+            .iter()
+            .find(|a| matches!(a, StorageAccess::Read { stmt_idx } if *stmt_idx < call_local));
 
         // Look for any storage write after this call
-        let write_after = storage.iter().find(|a| {
-            matches!(a, StorageAccess::Write { stmt_idx } if *stmt_idx > call_local)
-        });
+        let write_after = storage
+            .iter()
+            .find(|a| matches!(a, StorageAccess::Write { stmt_idx } if *stmt_idx > call_local));
 
         if let (Some(read), Some(write)) = (read_before, write_after) {
             let (read_idx, write_idx) = match (read, write) {

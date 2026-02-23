@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -99,13 +97,8 @@ impl Detector for L1HandlerUncheckedAmount {
             }
 
             // Collect payload param IDs (skip system + from_address)
-            let payload_var_ids: Vec<u64> = func
-                .raw
-                .params
-                .iter()
-                .skip(2)
-                .map(|(id, _)| *id)
-                .collect();
+            let payload_var_ids: Vec<u64> =
+                func.raw.params.iter().skip(2).map(|(id, _)| *id).collect();
 
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
@@ -152,11 +145,8 @@ impl Detector for L1HandlerUncheckedAmount {
                     // External call using payload as calldata (arg[3+], not the selector
                     // at arg[2]). Selector injection is a separate detector.
                     if libfunc_name.contains("call_contract") {
-                        let in_calldata = inv
-                            .args
-                            .iter()
-                            .skip(3)
-                            .any(|a| payload_var_ids.contains(a));
+                        let in_calldata =
+                            inv.args.iter().skip(3).any(|a| payload_var_ids.contains(a));
                         if in_calldata && call_site.is_none() {
                             call_site = Some(start + local_idx);
                         }

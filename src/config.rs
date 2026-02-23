@@ -21,6 +21,8 @@ pub struct AnalyzerConfig {
     pub suppressions: Vec<Suppression>,
     /// Strict mode: no fallback downgrades for unknown types.
     pub strict: bool,
+    /// External detector plugins (executables) to run per artifact.
+    pub plugin_commands: Vec<String>,
 }
 
 impl Default for AnalyzerConfig {
@@ -32,6 +34,7 @@ impl Default for AnalyzerConfig {
             baseline_path: None,
             suppressions: Vec::new(),
             strict: false,
+            plugin_commands: Vec::new(),
         }
     }
 }
@@ -70,6 +73,7 @@ pub struct ScarbAnalyzerConfig {
     pub baseline: Option<String>,
     pub strict: Option<bool>,
     pub suppress: Option<Vec<ScarbSuppression>>,
+    pub plugins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,7 +97,9 @@ struct ScarbToolSection {
     analyzer: Option<ScarbAnalyzerConfig>,
 }
 
-pub fn load_scarb_config(manifest_path: &Path) -> Result<Option<ScarbAnalyzerConfig>, AnalyzerError> {
+pub fn load_scarb_config(
+    manifest_path: &Path,
+) -> Result<Option<ScarbAnalyzerConfig>, AnalyzerError> {
     if !manifest_path.exists() {
         return Ok(None);
     }
@@ -115,9 +121,7 @@ impl AnalyzerConfig {
             (Some(include), _) if !include.iter().any(|d| d == "all") => {
                 DetectorSelection::Include(include.into_iter().collect())
             }
-            (_, Some(exclude)) => {
-                DetectorSelection::Exclude(exclude.into_iter().collect())
-            }
+            (_, Some(exclude)) => DetectorSelection::Exclude(exclude.into_iter().collect()),
             _ => DetectorSelection::All,
         };
 
@@ -150,6 +154,7 @@ impl AnalyzerConfig {
             baseline_path: scarb.baseline.map(PathBuf::from),
             suppressions,
             strict: scarb.strict.unwrap_or(false),
+            plugin_commands: scarb.plugins.unwrap_or_default(),
         })
     }
 }

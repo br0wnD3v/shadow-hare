@@ -4,11 +4,9 @@ use std::process;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
-use shadowhare::{
-    analyse_paths, render_output, update_baseline, OutputFormat,
-};
-use shadowhare::config::{AnalyzerConfig, DetectorSelection, load_scarb_config};
+use shadowhare::config::{load_scarb_config, AnalyzerConfig, DetectorSelection};
 use shadowhare::detectors::{DetectorRegistry, Severity};
+use shadowhare::{analyse_paths, render_output, update_baseline, OutputFormat};
 
 // ── CLI definition ───────────────────────────────────────────────────────────
 
@@ -72,6 +70,11 @@ struct DetectArgs {
     /// Strict mode: no fallback downgrades for unknown types.
     #[arg(long)]
     strict: bool,
+
+    /// External detector plugin executable (repeatable).
+    /// Plugin protocol: `<plugin> <artifact_path>` and stdout JSON (findings[] or full report).
+    #[arg(long = "plugin")]
+    plugins: Vec<String>,
 }
 
 #[derive(Args)]
@@ -171,18 +174,19 @@ fn run_detect(args: DetectArgs) -> Result<i32> {
 
     // CLI overrides
     if let Some(d) = &args.detectors {
-        config.detectors = DetectorSelection::Include(
-            d.split(',').map(|s| s.trim().to_string()).collect(),
-        );
+        config.detectors =
+            DetectorSelection::Include(d.split(',').map(|s| s.trim().to_string()).collect());
     }
     if let Some(e) = &args.exclude {
-        config.detectors = DetectorSelection::Exclude(
-            e.split(',').map(|s| s.trim().to_string()).collect(),
-        );
+        config.detectors =
+            DetectorSelection::Exclude(e.split(',').map(|s| s.trim().to_string()).collect());
     }
     config.min_severity = args.min_severity.into();
     config.fail_on_new_only = args.fail_on_new_only;
     config.strict = args.strict;
+    if !args.plugins.is_empty() {
+        config.plugin_commands.extend(args.plugins.clone());
+    }
     if let Some(bp) = args.baseline {
         config.baseline_path = Some(bp);
     }
@@ -194,8 +198,7 @@ fn run_detect(args: DetectArgs) -> Result<i32> {
     }
 
     let registry = DetectorRegistry::all();
-    let result = analyse_paths(&paths, &config, &registry)
-        .context("Analysis failed")?;
+    let result = analyse_paths(&paths, &config, &registry).context("Analysis failed")?;
 
     let output = render_output(&result, args.format.into()).context("Render failed")?;
     print!("{output}");
@@ -224,24 +227,21 @@ fn run_update_baseline(args: UpdateBaselineArgs) -> Result<i32> {
 }
 
 fn run_list_detectors() -> Result<i32> {
-    println!("{:<30} {:<10} {:<10} Description", "ID", "SEVERITY", "CONFIDENCE");
+    println!(
+        "{:<30} {:<10} {:<10} Description",
+        "ID", "SEVERITY", "CONFIDENCE"
+    );
     println!("{}", "-".repeat(80));
 
     let registry = DetectorRegistry::all();
-    // We can't iterate detectors directly since they're boxed, so list them manually.
-    let detectors: &[(&str, &str, &str, &str)] = &[
-        ("u256_underflow",        "high",   "medium", "Unchecked u256 subtraction underflow"),
-        ("unchecked_l1_handler",  "high",   "high",   "L1 handler missing from_address validation"),
-        ("reentrancy",            "high",   "medium", "Storage read-call-write reentrancy pattern"),
-        ("felt252_overflow",      "high",   "low",    "felt252 arithmetic wraps silently mod P"),
-        ("controlled_library_call","high",  "medium", "User-controlled class hash in library call"),
-        ("tx_origin_auth",        "medium", "medium", "Authentication via get_tx_info (tx.origin)"),
-        ("unused_return",         "low",    "high",   "Return value silently discarded"),
-        ("dead_code",             "info",   "medium", "Unreferenced function never called"),
-    ];
-
-    for (id, sev, conf, desc) in detectors {
-        println!("{id:<30} {sev:<10} {conf:<10} {desc}");
+    for detector in registry.iter() {
+        println!(
+            "{:<30} {:<10} {:<10} {}",
+            detector.id(),
+            detector.severity(),
+            detector.confidence(),
+            detector.description()
+        );
     }
     Ok(0)
 }

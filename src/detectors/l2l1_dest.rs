@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -83,7 +81,11 @@ impl Detector for L2ToL1TaintedDestination {
                 .iter()
                 .filter_map(|(id, ty)| {
                     let ty_name = ty.debug_name.as_deref().unwrap_or("");
-                    if ty_name == "System" { None } else { Some(*id) }
+                    if ty_name == "System" {
+                        None
+                    } else {
+                        Some(*id)
+                    }
                 })
                 .collect();
 

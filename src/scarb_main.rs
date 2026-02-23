@@ -30,20 +30,20 @@ fn main() {
         }
     }
 
-    // If no paths given and SCARB_TARGET_DIR is set, auto-discover
-    let has_paths = args
-        .windows(2)
-        .any(|w| w[0] == "detect" || w[0] == "update-baseline");
-
     if let Ok(target_dir) = std::env::var("SCARB_TARGET_DIR") {
         let profile = std::env::var("SCARB_PROFILE").unwrap_or_else(|_| "dev".to_string());
         let artifacts_dir = format!("{target_dir}/{profile}");
 
         // Inject target dir after "detect" or "update-baseline" subcommand
-        let detect_idx = args.iter().position(|a| a == "detect" || a == "update-baseline");
+        let detect_idx = args
+            .iter()
+            .position(|a| a == "detect" || a == "update-baseline");
         if let Some(idx) = detect_idx {
             // Check if a path argument is already present after the subcommand
-            let has_path_arg = args.get(idx + 1).map(|a| !a.starts_with('-')).unwrap_or(false);
+            let has_path_arg = args
+                .get(idx + 1)
+                .map(|a| !a.starts_with('-'))
+                .unwrap_or(false);
             if !has_path_arg {
                 args.insert(idx + 1, artifacts_dir);
             }
@@ -67,7 +67,11 @@ fn main() {
     let status = std::process::Command::new(&program)
         .args(&args[1..])
         .status()
-        .or_else(|_| std::process::Command::new("shadowhare").args(&args[1..]).status())
+        .or_else(|_| {
+            std::process::Command::new("shadowhare")
+                .args(&args[1..])
+                .status()
+        })
         .unwrap_or_else(|e| {
             eprintln!("Failed to exec shadowhare: {e}");
             std::process::exit(2);

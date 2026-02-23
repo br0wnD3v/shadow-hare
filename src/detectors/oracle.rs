@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -25,12 +23,7 @@ pub struct OraclePriceManipulation;
 
 /// Pass-through libfuncs that move a value without transforming it.
 /// Taint propagates through these without change.
-const PASS_THROUGH_LIBFUNCS: &[&str] = &[
-    "store_temp",
-    "rename",
-    "dup",
-    "snapshot_take",
-];
+const PASS_THROUGH_LIBFUNCS: &[&str] = &["store_temp", "rename", "dup", "snapshot_take"];
 
 impl Detector for OraclePriceManipulation {
     fn id(&self) -> &'static str {
@@ -101,8 +94,9 @@ impl Detector for OraclePriceManipulation {
                 }
 
                 // Pass-through: propagate oracle taint unchanged
-                let is_pass_through =
-                    PASS_THROUGH_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
+                let is_pass_through = PASS_THROUGH_LIBFUNCS
+                    .iter()
+                    .any(|p| libfunc_name.contains(p));
 
                 if is_pass_through {
                     if inv.args.iter().any(|a| oracle_tainted.contains(a)) {
@@ -116,8 +110,7 @@ impl Detector for OraclePriceManipulation {
                 }
 
                 // Storage write: check if the VALUE argument (arg[2]) is oracle-tainted
-                let is_storage_write =
-                    program.libfunc_registry.is_storage_write(&inv.libfunc_id);
+                let is_storage_write = program.libfunc_registry.is_storage_write(&inv.libfunc_id);
 
                 if is_storage_write {
                     let value_is_tainted = inv

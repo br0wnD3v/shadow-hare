@@ -1,7 +1,5 @@
-use shadowhare::loader::version::{
-    CompatibilityMatrix, CompatibilityTier, parse_version_loose,
-};
 use semver::Version;
+use shadowhare::loader::version::{parse_version_loose, CompatibilityMatrix, CompatibilityTier};
 
 #[test]
 fn tier1_is_current_stable() {

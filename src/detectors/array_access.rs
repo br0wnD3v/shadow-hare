@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -77,8 +75,9 @@ impl Detector for UncheckedArrayAccess {
                     .or_else(|| inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
-                let is_fallible_array =
-                    ARRAY_FALLIBLE_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
+                let is_fallible_array = ARRAY_FALLIBLE_LIBFUNCS
+                    .iter()
+                    .any(|p| libfunc_name.contains(p));
 
                 if is_fallible_array && inv.branches.len() == 1 {
                     findings.push(Finding::new(

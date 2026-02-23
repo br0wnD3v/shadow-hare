@@ -46,7 +46,12 @@ pub fn print_report<W: Write>(
 
 fn print_finding<W: Write>(writer: &mut W, f: &Finding) -> std::io::Result<()> {
     let icon = severity_icon(f.severity);
-    writeln!(writer, "\n{icon} [{severity}] {title}", severity = f.severity, title = f.title)?;
+    writeln!(
+        writer,
+        "\n{icon} [{severity}] {title}",
+        severity = f.severity,
+        title = f.title
+    )?;
     writeln!(writer, "   Detector:   {}", f.detector_id)?;
     writeln!(writer, "   Confidence: {}", f.confidence)?;
     writeln!(writer, "   Function:   {}", f.location.function)?;
@@ -88,10 +93,25 @@ struct FindingCounts {
 
 fn finding_counts(findings: &[Finding]) -> FindingCounts {
     FindingCounts {
-        critical: findings.iter().filter(|f| f.severity == Severity::Critical).count(),
-        high: findings.iter().filter(|f| f.severity == Severity::High).count(),
-        medium: findings.iter().filter(|f| f.severity == Severity::Medium).count(),
-        low: findings.iter().filter(|f| f.severity == Severity::Low).count(),
-        info: findings.iter().filter(|f| f.severity == Severity::Info).count(),
+        critical: findings
+            .iter()
+            .filter(|f| f.severity == Severity::Critical)
+            .count(),
+        high: findings
+            .iter()
+            .filter(|f| f.severity == Severity::High)
+            .count(),
+        medium: findings
+            .iter()
+            .filter(|f| f.severity == Severity::Medium)
+            .count(),
+        low: findings
+            .iter()
+            .filter(|f| f.severity == Severity::Low)
+            .count(),
+        info: findings
+            .iter()
+            .filter(|f| f.severity == Severity::Info)
+            .count(),
     }
 }

@@ -41,8 +41,16 @@ impl FunctionInfo {
             .enumerate()
             .map(|(idx, f)| {
                 let kind = classify_function(idx, f, entry_points);
-                let name = f.id.debug_name.clone().unwrap_or_else(|| format!("func_{idx}"));
-                Self { idx, raw: f.clone(), kind, name }
+                let name =
+                    f.id.debug_name
+                        .clone()
+                        .unwrap_or_else(|| format!("func_{idx}"));
+                Self {
+                    idx,
+                    raw: f.clone(),
+                    kind,
+                    name,
+                }
             })
             .collect()
     }
@@ -50,7 +58,10 @@ impl FunctionInfo {
     pub fn is_entrypoint(&self) -> bool {
         matches!(
             self.kind,
-            FunctionKind::External | FunctionKind::L1Handler | FunctionKind::Constructor | FunctionKind::View
+            FunctionKind::External
+                | FunctionKind::L1Handler
+                | FunctionKind::Constructor
+                | FunctionKind::View
         )
     }
 
@@ -75,13 +86,25 @@ impl FunctionInfo {
 }
 
 fn classify_function(idx: usize, func: &Function, entry_points: &EntryPoints) -> FunctionKind {
-    if entry_points.l1_handler.iter().any(|ep| ep.function_idx == idx) {
+    if entry_points
+        .l1_handler
+        .iter()
+        .any(|ep| ep.function_idx == idx)
+    {
         return FunctionKind::L1Handler;
     }
-    if entry_points.constructor.iter().any(|ep| ep.function_idx == idx) {
+    if entry_points
+        .constructor
+        .iter()
+        .any(|ep| ep.function_idx == idx)
+    {
         return FunctionKind::Constructor;
     }
-    if entry_points.external.iter().any(|ep| ep.function_idx == idx) {
+    if entry_points
+        .external
+        .iter()
+        .any(|ep| ep.function_idx == idx)
+    {
         return FunctionKind::External;
     }
 

@@ -42,20 +42,31 @@ pub struct Summary {
 }
 
 impl JsonReport {
-    pub fn build(
-        findings: &[Finding],
-        warnings: &[AnalyzerWarning],
-        sources: Vec<String>,
-    ) -> Self {
+    pub fn build(findings: &[Finding], warnings: &[AnalyzerWarning], sources: Vec<String>) -> Self {
         use crate::detectors::Severity;
 
         let summary = Summary {
             total: findings.len(),
-            critical: findings.iter().filter(|f| f.severity == Severity::Critical).count(),
-            high: findings.iter().filter(|f| f.severity == Severity::High).count(),
-            medium: findings.iter().filter(|f| f.severity == Severity::Medium).count(),
-            low: findings.iter().filter(|f| f.severity == Severity::Low).count(),
-            info: findings.iter().filter(|f| f.severity == Severity::Info).count(),
+            critical: findings
+                .iter()
+                .filter(|f| f.severity == Severity::Critical)
+                .count(),
+            high: findings
+                .iter()
+                .filter(|f| f.severity == Severity::High)
+                .count(),
+            medium: findings
+                .iter()
+                .filter(|f| f.severity == Severity::Medium)
+                .count(),
+            low: findings
+                .iter()
+                .filter(|f| f.severity == Severity::Low)
+                .count(),
+            info: findings
+                .iter()
+                .filter(|f| f.severity == Severity::Info)
+                .count(),
         };
 
         let json_warnings = warnings

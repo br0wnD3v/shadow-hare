@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -24,11 +22,7 @@ use crate::loader::CompatibilityTier;
 /// sequencer-agnostic time oracle where available.
 pub struct BlockTimestampDependence;
 
-const BLOCK_INFO_LIBFUNCS: &[&str] = &[
-    "get_block_timestamp",
-    "get_block_number",
-    "get_block_info",
-];
+const BLOCK_INFO_LIBFUNCS: &[&str] = &["get_block_timestamp", "get_block_number", "get_block_info"];
 
 const COMPARISON_LIBFUNCS: &[&str] = &[
     "felt252_is_zero",
@@ -100,8 +94,7 @@ impl Detector for BlockTimestampDependence {
                     .unwrap_or("");
 
                 // Track block info syscall results
-                let is_block_info =
-                    BLOCK_INFO_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
+                let is_block_info = BLOCK_INFO_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
 
                 if is_block_info {
                     for branch in &inv.branches {
@@ -129,8 +122,7 @@ impl Detector for BlockTimestampDependence {
                 }
 
                 // Fire when block-tainted var reaches a comparison
-                let is_comparison =
-                    COMPARISON_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
+                let is_comparison = COMPARISON_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
 
                 if is_comparison && inv.args.iter().any(|a| block_vars.contains(a)) {
                     if let Some(site) = block_info_site {

@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::{CompatibilityTier, Statement};
@@ -89,9 +87,7 @@ impl Detector for UnusedReturn {
                     .flat_map(|b| b.results.iter().copied())
                     .collect();
 
-                if !all_results.is_empty()
-                    && all_results.iter().all(|r| !used_vars.contains(r))
-                {
+                if !all_results.is_empty() && all_results.iter().all(|r| !used_vars.contains(r)) {
                     findings.push(Finding::new(
                         self.id(),
                         self.severity(),
@@ -99,7 +95,9 @@ impl Detector for UnusedReturn {
                         "Unused return value",
                         format!(
                             "Function '{}': return value of '{}' at stmt {} is never used.",
-                            func.name, libfunc_name, start + local_idx
+                            func.name,
+                            libfunc_name,
+                            start + local_idx
                         ),
                         Location {
                             file: program.source.display().to_string(),

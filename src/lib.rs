@@ -8,9 +8,10 @@ pub mod loader;
 pub mod output;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::baseline::Baseline;
-use crate::config::AnalyzerConfig;
+use crate::config::{AnalyzerConfig, Suppression};
 use crate::detectors::{DetectorRegistry, Finding};
 use crate::error::{AnalyzerError, AnalyzerWarning};
 use crate::ir::program::ProgramIR;
@@ -68,8 +69,7 @@ pub fn analyse_paths(
     let mut sources: Vec<String> = Vec::new();
 
     for path in paths {
-        let artifact =
-            sierra_loader::load_artifact(path, &matrix)?;
+        let artifact = sierra_loader::load_artifact(path, &matrix)?;
 
         sources.push(path.display().to_string());
 
@@ -83,17 +83,20 @@ pub fn analyse_paths(
         if program.compatibility <= CompatibilityTier::ParseOnly {
             all_warnings.push(AnalyzerWarning {
                 kind: crate::error::WarningKind::IncompatibleVersion,
-                message: format!(
-                    "{}: parse-only mode — detectors skipped",
-                    path.display()
-                ),
+                message: format!("{}: parse-only mode — detectors skipped", path.display()),
             });
             continue;
         }
 
-        let (findings, warnings) = registry.run_all(&program, config);
+        let (mut findings, warnings) = registry.run_all(&program, config);
+        enrich_findings_with_source_locations(&mut findings, &program);
         all_findings.extend(findings);
         all_warnings.extend(warnings);
+
+        let (mut plugin_findings, plugin_warnings) = run_external_plugins(path, config);
+        enrich_findings_with_source_locations(&mut plugin_findings, &program);
+        all_findings.extend(plugin_findings);
+        all_warnings.extend(plugin_warnings);
     }
 
     // Baseline comparison
@@ -121,11 +124,110 @@ pub fn analyse_paths(
     })
 }
 
+fn enrich_findings_with_source_locations(findings: &mut [Finding], program: &ProgramIR) {
+    for finding in findings {
+        if let Some(stmt_idx) = finding.location.statement_idx {
+            if let Some(source_loc) = program.source_location_for_stmt(stmt_idx) {
+                if finding.location.line.is_none() {
+                    finding.location.line = Some(source_loc.line);
+                }
+                if finding.location.col.is_none() {
+                    finding.location.col = Some(source_loc.col);
+                }
+            }
+        }
+    }
+}
+
+fn run_external_plugins(
+    path: &Path,
+    config: &AnalyzerConfig,
+) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
+    if config.plugin_commands.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut findings = Vec::new();
+    let mut warnings = Vec::new();
+
+    for plugin_cmd in &config.plugin_commands {
+        let output = Command::new(plugin_cmd).arg(path).output();
+        let output = match output {
+            Ok(out) => out,
+            Err(err) => {
+                warnings.push(AnalyzerWarning::detector_skipped(
+                    plugin_cmd,
+                    &format!("plugin execution failed: {err}"),
+                ));
+                continue;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warnings.push(AnalyzerWarning::detector_skipped(
+                plugin_cmd,
+                &format!(
+                    "plugin exited with status {}: {}",
+                    output.status,
+                    stderr.trim()
+                ),
+            ));
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match parse_plugin_findings(&stdout) {
+            Ok(mut plugin_findings) => {
+                plugin_findings.retain(|f| !is_suppressed(f, &config.suppressions));
+                plugin_findings.retain(|f| f.severity >= config.min_severity);
+                findings.extend(plugin_findings);
+            }
+            Err(err) => {
+                warnings.push(AnalyzerWarning::detector_skipped(
+                    plugin_cmd,
+                    &format!("invalid plugin JSON output: {err}"),
+                ));
+            }
+        }
+    }
+
+    (findings, warnings)
+}
+
+fn parse_plugin_findings(stdout: &str) -> Result<Vec<Finding>, String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|e| format!("JSON parse error: {e}"))?;
+
+    if value.is_array() {
+        return serde_json::from_value(value).map_err(|e| format!("findings parse error: {e}"));
+    }
+
+    if let Some(findings_value) = value.get("findings") {
+        return serde_json::from_value(findings_value.clone())
+            .map_err(|e| format!("findings parse error: {e}"));
+    }
+
+    Err("expected JSON array or object with findings[]".to_string())
+}
+
+fn is_suppressed(finding: &Finding, suppressions: &[Suppression]) -> bool {
+    suppressions.iter().any(|s| {
+        s.detector_id == finding.detector_id
+            && match &s.location_hash {
+                None => true,
+                Some(h) => finding.fingerprint.as_deref() == Some(h.as_str()),
+            }
+    })
+}
+
 /// Update the baseline file with the current set of findings.
-pub fn update_baseline(
-    baseline_path: &Path,
-    findings: &[Finding],
-) -> Result<(), AnalyzerError> {
+pub fn update_baseline(baseline_path: &Path, findings: &[Finding]) -> Result<(), AnalyzerError> {
     let mut baseline = Baseline::load(baseline_path)?;
     baseline.update_from_findings(findings);
     baseline.save(baseline_path)
@@ -140,27 +242,19 @@ pub fn render_output(
         OutputFormat::Human => {
             let mut buf = Vec::new();
             let source = result.sources.join(", ");
-            output::human::print_report(
-                &mut buf,
-                &result.findings,
-                &result.warnings,
-                &source,
-            )
-            .map_err(|e| AnalyzerError::Io {
-                path: PathBuf::from("<stdout>"),
-                source: e,
-            })?;
+            output::human::print_report(&mut buf, &result.findings, &result.warnings, &source)
+                .map_err(|e| AnalyzerError::Io {
+                    path: PathBuf::from("<stdout>"),
+                    source: e,
+                })?;
             Ok(String::from_utf8_lossy(&buf).into_owned())
         }
         OutputFormat::Json => {
-            let report = JsonReport::build(
-                &result.findings,
-                &result.warnings,
-                result.sources.clone(),
-            );
-            report.to_json_string().map_err(|e| {
-                AnalyzerError::Config(format!("JSON serialisation failed: {e}"))
-            })
+            let report =
+                JsonReport::build(&result.findings, &result.warnings, result.sources.clone());
+            report
+                .to_json_string()
+                .map_err(|e| AnalyzerError::Config(format!("JSON serialisation failed: {e}")))
         }
         OutputFormat::Sarif => {
             let sarif = build_sarif(&result.findings, &result.sources);

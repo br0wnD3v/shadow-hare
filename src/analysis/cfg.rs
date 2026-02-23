@@ -102,21 +102,17 @@ impl Cfg {
         let mut blocks: Vec<BasicBlock> = Vec::with_capacity(sorted_leaders.len());
 
         for (block_id, &leader) in sorted_leaders.iter().enumerate() {
-            let block_end = sorted_leaders
-                .get(block_id + 1)
-                .copied()
-                .unwrap_or(n);
+            let block_end = sorted_leaders.get(block_id + 1).copied().unwrap_or(n);
 
-            let stmt_indices: Vec<StatementIdx> = (leader..block_end)
-                .map(|local| local + start)
-                .collect();
+            let stmt_indices: Vec<StatementIdx> =
+                (leader..block_end).map(|local| local + start).collect();
 
             // Determine terminator from the last statement in this block.
             let terminator = if stmt_indices.is_empty() {
                 Terminator::Diverge
             } else {
                 let last_local = stmt_indices.last().copied().unwrap() - start;
-                compute_terminator(stmts, last_local, start, block_end, &block_of, n)
+                compute_terminator(stmts, last_local, start, &block_of)
             };
 
             blocks.push(BasicBlock {
@@ -134,7 +130,11 @@ impl Cfg {
             }
         }
 
-        Self { blocks, entry: 0, predecessors }
+        Self {
+            blocks,
+            entry: 0,
+            predecessors,
+        }
     }
 
     fn empty() -> Self {
@@ -179,9 +179,7 @@ fn compute_terminator(
     stmts: &[Statement],
     last_local: usize,
     start: usize,
-    block_end: usize,
     block_of: &HashMap<usize, BlockIdx>,
-    n: usize,
 ) -> Terminator {
     match &stmts[last_local] {
         Statement::Return(_) => Terminator::Return,
@@ -228,11 +226,17 @@ mod tests {
 
     fn invocation_stmt(libfunc_name: &str, branches: Vec<BranchTarget>) -> Statement {
         Statement::Invocation(Invocation {
-            libfunc_id: SierraId { id: Some(0), debug_name: Some(libfunc_name.to_string()) },
+            libfunc_id: SierraId {
+                id: Some(0),
+                debug_name: Some(libfunc_name.to_string()),
+            },
             args: vec![],
             branches: branches
                 .into_iter()
-                .map(|t| BranchInfo { target: t, results: vec![] })
+                .map(|t| BranchInfo {
+                    target: t,
+                    results: vec![],
+                })
                 .collect(),
         })
     }
@@ -270,6 +274,10 @@ mod tests {
             Statement::Return(vec![]),
         ];
         let cfg = Cfg::build(&stmts, 0, stmts.len());
-        assert!(cfg.blocks.len() >= 2, "Expected multiple blocks, got {}", cfg.blocks.len());
+        assert!(
+            cfg.blocks.len() >= 2,
+            "Expected multiple blocks, got {}",
+            cfg.blocks.len()
+        );
     }
 }

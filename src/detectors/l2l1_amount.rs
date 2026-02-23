@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -98,7 +96,11 @@ impl Detector for L2ToL1UnverifiedAmount {
                 .iter()
                 .filter_map(|(id, ty)| {
                     let ty_name = ty.debug_name.as_deref().unwrap_or("");
-                    if ty_name == "System" { None } else { Some(*id) }
+                    if ty_name == "System" {
+                        None
+                    } else {
+                        Some(*id)
+                    }
                 })
                 .collect();
 
@@ -147,11 +149,7 @@ impl Detector for L2ToL1UnverifiedAmount {
                 // arg layout: [system, to_address, payload_values...]
                 // payload starts at arg[2]
                 if libfunc_name.contains("send_message_to_l1") {
-                    let payload_tainted = inv
-                        .args
-                        .iter()
-                        .skip(2)
-                        .any(|a| tainted.contains(a));
+                    let payload_tainted = inv.args.iter().skip(2).any(|a| tainted.contains(a));
 
                     if payload_tainted && send_site.is_none() {
                         send_site = Some(start + local_idx);

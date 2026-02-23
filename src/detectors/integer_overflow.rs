@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -91,9 +89,7 @@ impl Detector for UncheckedIntegerOverflow {
                     .or_else(|| inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
-                let is_overflow_op = OVERFLOW_LIBFUNCS
-                    .iter()
-                    .any(|p| libfunc_name.contains(p));
+                let is_overflow_op = OVERFLOW_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
 
                 if !is_overflow_op {
                     continue;

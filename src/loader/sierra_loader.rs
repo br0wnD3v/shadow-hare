@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use cairo_annotations::annotations::coverage::VersionedCoverageAnnotations;
+use cairo_annotations::annotations::TryFromDebugInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AnalyzerError, AnalyzerWarning};
@@ -14,7 +17,15 @@ pub struct LoadedArtifact {
     pub compatibility: CompatibilityTier,
     pub program: SierraProgram,
     pub entry_points: EntryPoints,
+    pub statement_locations: HashMap<usize, SourceLocation>,
     pub warnings: Vec<AnalyzerWarning>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub file: Option<String>,
+    pub line: u32,
+    pub col: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +103,10 @@ pub struct RawConcreteLibfuncLongId {
 #[serde(untagged)]
 pub enum RawStatement {
     Invocation(RawInvocation),
-    Return { #[serde(rename = "Return")] ret: Vec<RawVarId> },
+    Return {
+        #[serde(rename = "Return")]
+        ret: Vec<RawVarId>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,7 +135,10 @@ pub struct RawBranchInfo {
 #[serde(untagged)]
 pub enum RawBranchTarget {
     Fallthrough(serde_json::Value), // "Fallthrough" string
-    Statement { #[serde(rename = "Statement")] idx: u64 },
+    Statement {
+        #[serde(rename = "Statement")]
+        idx: u64,
+    },
 }
 
 impl RawBranchTarget {
@@ -155,7 +172,9 @@ impl<'de> serde::Deserialize<'de> for RawVarId {
                 .and_then(|v| v.as_u64())
                 .map(RawVarId)
                 .ok_or_else(|| serde::de::Error::custom("VarId object missing numeric id")),
-            _ => Err(serde::de::Error::custom("Expected VarId (integer or {id: N})")),
+            _ => Err(serde::de::Error::custom(
+                "Expected VarId (integer or {id: N})",
+            )),
         }
     }
 }
@@ -416,6 +435,7 @@ fn load_raw_sierra(
         compatibility: compat,
         program,
         entry_points: EntryPoints::default(),
+        statement_locations: HashMap::new(),
         warnings,
     })
 }
@@ -440,7 +460,7 @@ fn load_contract_class(
     let (compat, mut warnings) = crate::loader::version::negotiate(&artifact_version, matrix)?;
 
     // Decode the encoded Sierra program from the contract class.
-    let program = decode_contract_class_program(&raw, path, &mut warnings)?;
+    let (program, statement_locations) = decode_contract_class_program(&raw, path, &mut warnings)?;
 
     let entry_points = normalise_entry_points(raw.entry_points_by_type.as_ref());
 
@@ -451,6 +471,7 @@ fn load_contract_class(
         compatibility: compat,
         program,
         entry_points,
+        statement_locations,
         warnings,
     })
 }
@@ -463,7 +484,7 @@ fn decode_contract_class_program(
     raw: &RawContractClass,
     path: &Path,
     warnings: &mut Vec<AnalyzerWarning>,
-) -> Result<SierraProgram, AnalyzerError> {
+) -> Result<(SierraProgram, HashMap<usize, SourceLocation>), AnalyzerError> {
     // Re-read the original file and deserialize into cairo-lang-starknet-classes' ContractClass.
     let raw_json = std::fs::read_to_string(path).map_err(|e| AnalyzerError::Io {
         path: path.to_path_buf(),
@@ -483,6 +504,11 @@ fn decode_contract_class_program(
             let extracted = cc.extract_sierra_program(false).map_err(|e| {
                 AnalyzerError::Config(format!("Failed to decode Sierra program: {e}"))
             })?;
+            let statement_locations = cc
+                .sierra_program_debug_info
+                .as_ref()
+                .map(extract_statement_locations)
+                .unwrap_or_default();
 
             let mut w = Vec::new();
             let mut program = convert_cairo_program(extracted.program, &mut w);
@@ -513,12 +539,8 @@ fn decode_contract_class_program(
                     if let (Some(id), None) = (decl.id.id, decl.id.debug_name.as_deref()) {
                         if let Some(name) = libfunc_names.get(&id) {
                             decl.id.debug_name = Some((*name).to_string());
-                            decl.generic_id = name
-                                .split('<')
-                                .next()
-                                .unwrap_or(name)
-                                .trim()
-                                .to_string();
+                            decl.generic_id =
+                                name.split('<').next().unwrap_or(name).trim().to_string();
                         }
                     }
                 }
@@ -532,18 +554,14 @@ fn decode_contract_class_program(
                     if let (Some(id), None) = (decl.id.id, decl.id.debug_name.as_deref()) {
                         if let Some(name) = type_names.get(&id) {
                             decl.id.debug_name = Some((*name).to_string());
-                            decl.generic_id = name
-                                .split('<')
-                                .next()
-                                .unwrap_or(name)
-                                .trim()
-                                .to_string();
+                            decl.generic_id =
+                                name.split('<').next().unwrap_or(name).trim().to_string();
                         }
                     }
                 }
             }
 
-            Ok(program)
+            Ok((program, statement_locations))
         }
         Err(err) => {
             // Fallback: create empty program with warning
@@ -554,14 +572,45 @@ fn decode_contract_class_program(
                     path.display()
                 ),
             });
-            Ok(SierraProgram {
-                type_declarations: Vec::new(),
-                libfunc_declarations: Vec::new(),
-                statements: Vec::new(),
-                functions: extract_functions_from_debug_info(raw),
-            })
+            Ok((
+                SierraProgram {
+                    type_declarations: Vec::new(),
+                    libfunc_declarations: Vec::new(),
+                    statements: Vec::new(),
+                    functions: extract_functions_from_debug_info(raw),
+                },
+                HashMap::new(),
+            ))
         }
     }
+}
+
+fn extract_statement_locations(
+    debug_info: &cairo_lang_sierra::debug_info::DebugInfo,
+) -> HashMap<usize, SourceLocation> {
+    let mut out = HashMap::new();
+    let Ok(VersionedCoverageAnnotations::V1(coverage)) =
+        VersionedCoverageAnnotations::try_from_debug_info(debug_info)
+    else {
+        return out;
+    };
+
+    for (stmt_idx, code_locations) in coverage.statements_code_locations {
+        let Some(first) = code_locations.first() else {
+            continue;
+        };
+        let (clean_path, _) = first.0.remove_virtual_file_markings();
+        out.insert(
+            stmt_idx.0,
+            SourceLocation {
+                file: Some(clean_path.to_string()),
+                line: (first.1.start.line.0 as u32).saturating_add(1),
+                col: (first.1.start.col.0 as u32).saturating_add(1),
+            },
+        );
+    }
+
+    out
 }
 
 fn extract_functions_from_debug_info(raw: &RawContractClass) -> Vec<Function> {
@@ -574,7 +623,7 @@ fn extract_functions_from_debug_info(raw: &RawContractClass) -> Vec<Function> {
         .user_func_names
         .iter()
         .enumerate()
-        .map(|(idx, (id, name))| Function {
+        .map(|(_idx, (id, name))| Function {
             id: SierraId {
                 id: Some(*id),
                 debug_name: Some(name.clone()),
@@ -672,7 +721,7 @@ fn normalise_raw_program(
     }
 }
 
-fn normalise_statement(raw: RawStatement, warnings: &mut Vec<AnalyzerWarning>) -> Statement {
+fn normalise_statement(raw: RawStatement, _warnings: &mut Vec<AnalyzerWarning>) -> Statement {
     match raw {
         RawStatement::Return { ret } => Statement::Return(ret.into_iter().map(|v| v.0).collect()),
         RawStatement::Invocation(inv) => {
@@ -683,7 +732,9 @@ fn normalise_statement(raw: RawStatement, warnings: &mut Vec<AnalyzerWarning>) -
                 .map(|b| BranchInfo {
                     target: match &b.target {
                         RawBranchTarget::Fallthrough(_) => BranchTarget::Fallthrough,
-                        RawBranchTarget::Statement { idx } => BranchTarget::Statement(*idx as usize),
+                        RawBranchTarget::Statement { idx } => {
+                            BranchTarget::Statement(*idx as usize)
+                        }
                     },
                     results: b.results.into_iter().map(|v| v.0).collect(),
                 })
@@ -812,7 +863,12 @@ fn convert_cairo_program(
         })
         .collect();
 
-    SierraProgram { type_declarations, libfunc_declarations, statements, functions }
+    SierraProgram {
+        type_declarations,
+        libfunc_declarations,
+        statements,
+        functions,
+    }
 }
 
 impl Default for RawSierraProgram {
@@ -839,9 +895,7 @@ pub fn resolve_artifacts(dir: &Path) -> Vec<PathBuf> {
             if p.is_dir() {
                 walk(&p, paths);
             } else if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".sierra.json")
-                    || name.ends_with(".contract_class.json")
-                {
+                if name.ends_with(".sierra.json") || name.ends_with(".contract_class.json") {
                     paths.push(p);
                 }
             }

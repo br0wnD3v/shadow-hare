@@ -6,8 +6,7 @@ use crate::detectors::{Finding, Severity};
 /// SARIF 2.1.0 output for GitHub code scanning and CI integration.
 /// Spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 pub const SARIF_VERSION: &str = "2.1.0";
-pub const SARIF_SCHEMA: &str =
-    "https://json.schemastore.org/sarif-2.1.0.json";
+pub const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SarifLog {

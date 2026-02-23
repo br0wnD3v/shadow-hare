@@ -1,6 +1,4 @@
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
@@ -22,16 +20,6 @@ const UNDERFLOW_LIBFUNCS: &[&str] = &[
     "u32_overflowing_sub",
     "u16_overflowing_sub",
     "u8_overflowing_sub",
-];
-
-// Libfuncs that consume the overflow flag (meaning the code IS checking)
-const CHECK_LIBFUNCS: &[&str] = &[
-    "branch_align",
-    "felt252_is_zero",
-    "bool_not_impl",
-    "unwrap_nz",
-    // Panic-on-overflow variants already have built-in checking
-    "u256_safe_divmod",
 ];
 
 impl Detector for U256Underflow {
@@ -71,11 +59,6 @@ impl Detector for U256Underflow {
             }
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            // Collect all variables that hold overflow flags from subtraction ops
-            // and track which ones are used in subsequent checks.
-            let overflow_vars: Vec<(u64, usize)> = Vec::new(); // (var_id, stmt_idx)
-            let mut checked_vars: std::collections::HashSet<u64> = std::collections::HashSet::new();
-
             for (local_idx, stmt) in stmts.iter().enumerate() {
                 let inv = match stmt.as_invocation() {
                     Some(inv) => inv,
@@ -87,13 +70,6 @@ impl Detector for U256Underflow {
                     .generic_id(&inv.libfunc_id)
                     .or_else(|| inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
-
-                // Check if this invocation uses an overflow var (i.e., checks it)
-                for arg in &inv.args {
-                    if overflow_vars.iter().any(|(v, _)| v == arg) {
-                        checked_vars.insert(*arg);
-                    }
-                }
 
                 // Detect subtraction libfuncs that produce overflow flags
                 if UNDERFLOW_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {

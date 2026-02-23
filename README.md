@@ -21,18 +21,15 @@ JSON, or SARIF format.
 
 ## Current Detector Set
 
-The built-in registry currently runs 8 detectors (deterministic output order):
+The built-in registry currently runs 32 detectors in deterministic order.
 
-| Detector ID               | Severity | Confidence | Core Trigger                                                                  |
-| ------------------------- | -------- | ---------- | ----------------------------------------------------------------------------- |
-| `u256_underflow`          | High     | Medium     | Overflowing subtraction libfunc with only a single branch (unchecked path)    |
-| `unchecked_l1_handler`    | High     | High       | L1 handler where inferred `from_address` is not used in validation/comparison |
-| `reentrancy`              | High     | Medium     | Storage read -> external call -> storage write in entrypoint functions        |
-| `felt252_overflow`        | High     | Low        | Tainted felt252 arithmetic with no range-check libfunc observed               |
-| `controlled_library_call` | High     | Medium     | `library_call*` receives tainted/user-controlled arguments                    |
-| `tx_origin_auth`          | Medium   | Medium     | Values tainted from `get_tx_info`/`get_execution_info` reach auth-like checks |
-| `unused_return`           | Low      | High       | Invocation results are never read later in the function                       |
-| `dead_code`               | Info     | Medium     | Non-entrypoint function appears unreferenced (debug-info-dependent heuristic) |
+- High: `u256_underflow`, `unchecked_l1_handler`, `reentrancy`, `controlled_library_call`, `unprotected_upgrade`, `unchecked_integer_overflow`, `integer_truncation`, `unchecked_address_cast`, `unchecked_array_access`, `oracle_price_manipulation`, `missing_nonce_validation`, `signature_replay`, `write_without_caller_check`, `l2_to_l1_tainted_destination`, `l1_handler_unchecked_amount`, `l1_handler_payload_to_storage`, `l1_handler_unchecked_selector`, `l2_to_l1_unverified_amount`
+- Medium: `felt252_overflow`, `tx_origin_auth`, `divide_before_multiply`, `tainted_storage_key`, `hardcoded_address`, `block_timestamp_dependence`, `multiple_external_calls`, `unchecked_l1_message`, `view_state_modification`, `l2_to_l1_double_send`
+- Low: `unused_return`, `missing_event_emission`, `missing_zero_address_check`
+- Info: `dead_code`
+
+Source of truth for detector behavior and rationale is `docs/RULES.md`.
+Use `shadowhare list-detectors` for runtime metadata (severity/confidence/description).
 
 ## CLI
 
@@ -60,6 +57,7 @@ shdr detect <PATH...> [options]
 - `--exclude <id1,id2,...>`
 - `--manifest <Scarb.toml path>`
 - `--strict`
+- `--plugin <executable>` (repeatable; external detector plugins)
 
 ### Exit codes
 
@@ -111,6 +109,7 @@ exclude = ["dead_code"]            # ignored if detectors is explicit non-"all"
 severity_threshold = "medium"      # info|low|medium|high
 baseline = ".shadowhare-baseline.json"
 strict = false
+plugins = ["./target/debug/my-shadowhare-plugin"] # optional external plugins
 
 [[tool.shadowhare.suppress]]
 id = "reentrancy"
@@ -192,6 +191,20 @@ Current loader behavior:
 - Source `line`/`col` fields are optional and may be absent.
 - Contract-class decoding uses `cairo-lang-starknet-classes` and enriches names
   from contract debug info when present.
+- If coverage annotations are embedded (`cairo-annotations` namespace), findings
+  are enriched with 1-based source `line`/`col`.
+
+## External Plugins
+
+`shadowhare detect` can execute external detector plugins via `--plugin`.
+
+Plugin contract:
+
+- Shadowhare invokes plugin as: `<plugin_executable> <artifact_path>`
+- Plugin must print JSON to stdout:
+  - either `[]` / `[Finding, ...]`
+  - or `{ "findings": [Finding, ...] }`
+- Non-zero plugin exit is treated as a warning; core analysis still completes.
 
 ## Build and Test
 

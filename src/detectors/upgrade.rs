@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::callgraph::CallGraph;
-use crate::detectors::{
-    Confidence, Detector, DetectorRequirements, Finding, Location, Severity,
-};
+use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::{BranchTarget, CompatibilityTier, Invocation, Statement};
@@ -86,7 +84,11 @@ impl Detector for UnprotectedUpgrade {
                     let is_replace = REPLACE_CLASS_LIBFUNCS
                         .iter()
                         .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
-                    if is_replace { Some(local_idx) } else { None }
+                    if is_replace {
+                        Some(local_idx)
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
@@ -187,8 +189,7 @@ fn has_storage_backed_check(
         let is_branch_guard = is_guarding_branch(inv, program, func_start, func_end);
         let has_mixed_arg = arg_union & (TAG_CALLER | TAG_STORAGE) == (TAG_CALLER | TAG_STORAGE);
 
-        if (is_check || is_branch_guard) && (has_mixed_arg || (has_caller_arg && has_storage_arg))
-        {
+        if (is_check || is_branch_guard) && (has_mixed_arg || (has_caller_arg && has_storage_arg)) {
             return true;
         }
 
@@ -199,7 +200,8 @@ fn has_storage_backed_check(
             .unwrap_or(false);
         let mut call_produced_tag = 0u8;
         if is_function_call {
-            if let Some(callee_idx) = callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
+            if let Some(callee_idx) =
+                callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
             {
                 let mut visiting: HashSet<usize> = [func_idx].into_iter().collect();
                 if function_has_structural_guard(
@@ -307,8 +309,7 @@ fn function_has_structural_guard(
             .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
         let is_branch_guard = is_guarding_branch(inv, program, start, end);
         let has_mixed_arg = arg_union & (TAG_CALLER | TAG_STORAGE) == (TAG_CALLER | TAG_STORAGE);
-        if (is_check || is_branch_guard) && (has_mixed_arg || (has_caller_arg && has_storage_arg))
-        {
+        if (is_check || is_branch_guard) && (has_mixed_arg || (has_caller_arg && has_storage_arg)) {
             found = true;
             break;
         }
@@ -320,7 +321,8 @@ fn function_has_structural_guard(
             .unwrap_or(false);
         let mut call_produced_tag = 0u8;
         if is_function_call {
-            if let Some(callee_idx) = callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
+            if let Some(callee_idx) =
+                callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
             {
                 if function_has_structural_guard(
                     callee_idx,
