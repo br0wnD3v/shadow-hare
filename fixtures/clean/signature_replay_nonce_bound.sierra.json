@@ -1,0 +1,110 @@
+{
+  "type_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "felt252" },
+      "long_id": { "generic_id": "felt252", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 1, "debug_name": "System" },
+      "long_id": { "generic_id": "System", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": false, "duplicatable": false, "zero_sized": false }
+    }
+  ],
+  "libfunc_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "get_tx_info" },
+      "long_id": { "generic_id": "get_tx_info", "generic_args": [] }
+    },
+    {
+      "id": { "id": 1, "debug_name": "storage_read_syscall" },
+      "long_id": { "generic_id": "storage_read_syscall", "generic_args": [] }
+    },
+    {
+      "id": { "id": 2, "debug_name": "assert_eq" },
+      "long_id": { "generic_id": "assert_eq", "generic_args": [] }
+    },
+    {
+      "id": { "id": 3, "debug_name": "storage_write_syscall" },
+      "long_id": { "generic_id": "storage_write_syscall", "generic_args": [] }
+    }
+  ],
+  "statements": [
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 0, "debug_name": "get_tx_info" },
+        "args": [0],
+        "branches": [
+          { "target": "Fallthrough", "results": [1, 2] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 1, "debug_name": "storage_read_syscall" },
+        "args": [1, 3],
+        "branches": [
+          { "target": "Fallthrough", "results": [4, 5] }
+        ]
+      }
+    },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 2, "debug_name": "assert_eq" },
+        "args": [2, 5],
+        "branches": [
+          { "target": "Fallthrough", "results": [6] }
+        ]
+      }
+    },
+    { "Return": [6] },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 3, "debug_name": "storage_write_syscall" },
+        "args": [10, 11, 12],
+        "branches": [
+          { "target": "Fallthrough", "results": [13] }
+        ]
+      }
+    },
+    { "Return": [13] }
+  ],
+  "funcs": [
+    {
+      "id": { "id": 0, "debug_name": "wallet::__validate__" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" }
+        ]
+      },
+      "params": [
+        { "id": 0, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 3, "ty": { "id": 0, "debug_name": "felt252" } }
+      ],
+      "entry_point": 0
+    },
+    {
+      "id": { "id": 1, "debug_name": "wallet::__execute__" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" },
+          { "id": 0, "debug_name": "felt252" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" }
+        ]
+      },
+      "params": [
+        { "id": 10, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 11, "ty": { "id": 0, "debug_name": "felt252" } },
+        { "id": 12, "ty": { "id": 0, "debug_name": "felt252" } }
+      ],
+      "entry_point": 4
+    }
+  ]
+}

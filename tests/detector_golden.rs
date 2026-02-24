@@ -917,3 +917,86 @@ fn seeded_pure_l2_to_l1_unverified_amount_fires() {
         "l2_to_l1_unverified_amount not in {ids:?}"
     );
 }
+
+// ── Replay / mutability / zero-address hardening regressions ────────────────
+
+#[test]
+fn seeded_pure_signature_replay_fires() {
+    let (ids, count) = run_seeded("pure", "signature_replay.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"signature_replay".to_string()),
+        "signature_replay not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_view_state_modification_fires() {
+    let (ids, count) = run_seeded("pure", "view_state_modification.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"view_state_modification".to_string()),
+        "view_state_modification not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_missing_zero_address_check_fires() {
+    let (ids, count) = run_seeded("pure", "missing_zero_address_check.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"missing_zero_address_check".to_string()),
+        "missing_zero_address_check not in {ids:?}"
+    );
+}
+
+#[test]
+fn signature_replay_clean_when_nonce_is_bound_and_persisted() {
+    let program = load_program(fixture("clean/signature_replay_nonce_bound.sierra.json"));
+    let registry = DetectorRegistry::all();
+    let config = AnalyzerConfig::default();
+    let (findings, _warnings) = registry.run_all(&program, &config);
+
+    let replay_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.detector_id == "signature_replay")
+        .collect();
+    assert!(
+        replay_findings.is_empty(),
+        "signature_replay should not fire on nonce-bound + persisted flow. Got: {replay_findings:?}"
+    );
+}
+
+#[test]
+fn view_state_modification_clean_when_view_path_only_reads() {
+    let program = load_program(fixture("clean/view_no_state_modification.sierra.json"));
+    let registry = DetectorRegistry::all();
+    let config = AnalyzerConfig::default();
+    let (findings, _warnings) = registry.run_all(&program, &config);
+
+    let view_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.detector_id == "view_state_modification")
+        .collect();
+    assert!(
+        view_findings.is_empty(),
+        "view_state_modification should not fire when view call tree has no storage writes. Got: {view_findings:?}"
+    );
+}
+
+#[test]
+fn missing_zero_address_check_clean_when_address_is_checked() {
+    let program = load_program(fixture("clean/zero_address_checked.sierra.json"));
+    let registry = DetectorRegistry::all();
+    let config = AnalyzerConfig::default();
+    let (findings, _warnings) = registry.run_all(&program, &config);
+
+    let zero_addr_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.detector_id == "missing_zero_address_check")
+        .collect();
+    assert!(
+        zero_addr_findings.is_empty(),
+        "missing_zero_address_check should not fire when target address is explicitly checked. Got: {zero_addr_findings:?}"
+    );
+}

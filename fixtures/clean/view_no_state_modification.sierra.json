@@ -1,0 +1,89 @@
+{
+  "type_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "felt252" },
+      "long_id": { "generic_id": "felt252", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": true, "duplicatable": true, "zero_sized": false }
+    },
+    {
+      "id": { "id": 1, "debug_name": "System" },
+      "long_id": { "generic_id": "System", "generic_args": [] },
+      "declared_type_info": { "storable": true, "droppable": false, "duplicatable": false, "zero_sized": false }
+    }
+  ],
+  "libfunc_declarations": [
+    {
+      "id": { "id": 0, "debug_name": "storage_read_syscall" },
+      "long_id": { "generic_id": "storage_read_syscall", "generic_args": [] }
+    },
+    {
+      "id": { "id": 1, "debug_name": "function_call<user@oracle::helper_read>" },
+      "long_id": {
+        "generic_id": "function_call",
+        "generic_args": [
+          { "user_type": { "id": 0 } }
+        ]
+      }
+    }
+  ],
+  "statements": [
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 0, "debug_name": "storage_read_syscall" },
+        "args": [0, 1],
+        "branches": [
+          { "target": "Fallthrough", "results": [2, 3] }
+        ]
+      }
+    },
+    { "Return": [2, 3] },
+    {
+      "Invocation": {
+        "libfunc_id": { "id": 1, "debug_name": "function_call<user@oracle::helper_read>" },
+        "args": [10, 11],
+        "branches": [
+          { "target": "Fallthrough", "results": [12, 13] }
+        ]
+      }
+    },
+    { "Return": [12, 13] }
+  ],
+  "funcs": [
+    {
+      "id": { "id": 0, "debug_name": "oracle::helper_read" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" }
+        ]
+      },
+      "params": [
+        { "id": 0, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 1, "ty": { "id": 0, "debug_name": "felt252" } }
+      ],
+      "entry_point": 0
+    },
+    {
+      "id": { "id": 1, "debug_name": "oracle::__view::peek" },
+      "signature": {
+        "param_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" }
+        ],
+        "ret_types": [
+          { "id": 1, "debug_name": "System" },
+          { "id": 0, "debug_name": "felt252" }
+        ]
+      },
+      "params": [
+        { "id": 10, "ty": { "id": 1, "debug_name": "System" } },
+        { "id": 11, "ty": { "id": 0, "debug_name": "felt252" } }
+      ],
+      "entry_point": 2
+    }
+  ]
+}
