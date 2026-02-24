@@ -46,6 +46,16 @@ shadowhare detect target/dev/ \
   --fail-on-new-only
 ```
 
+## Diff workflow (PR vs baseline artifact set)
+
+```bash
+# Compare two artifact trees and fail only on new high+ issues
+shadowhare detect-diff \
+  --left artifacts/mainline \
+  --right artifacts/pr \
+  --fail-on-new-severity high
+```
+
 ## Exit codes
 
 | Code | Meaning |

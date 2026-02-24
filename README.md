@@ -14,6 +14,7 @@ JSON, or SARIF format.
 - Runs detector suite in parallel.
 - Applies severity threshold and suppression rules.
 - Supports baseline diffing (`--fail-on-new-only` + `--baseline`).
+- Supports structural printers (`summary`, `callgraph`, `attack-surface`).
 - Emits:
   - Human-readable report
   - Versioned JSON report
@@ -21,9 +22,9 @@ JSON, or SARIF format.
 
 ## Current Detector Set
 
-The built-in registry currently runs 56 detectors in deterministic order.
+The built-in registry currently runs 61 detectors in deterministic order.
 
-- High: `u256_underflow`, `unchecked_l1_handler`, `reentrancy`, `controlled_library_call`, `unprotected_upgrade`, `unchecked_integer_overflow`, `integer_truncation`, `unchecked_address_cast`, `unchecked_array_access`, `oracle_price_manipulation`, `missing_nonce_validation`, `signature_replay`, `arbitrary_token_transfer`, `write_without_caller_check`, `rtlo`, `l2_to_l1_tainted_destination`, `l1_handler_unchecked_amount`, `l1_handler_payload_to_storage`, `l1_handler_unchecked_selector`, `l2_to_l1_unverified_amount`
+- High: `u256_underflow`, `unchecked_l1_handler`, `reentrancy`, `controlled_library_call`, `deploy_syscall_tainted_class_hash`, `unprotected_upgrade`, `account_interface_compliance`, `account_validate_forbidden_syscalls`, `account_execute_missing_v0_block`, `initializer_replay_or_missing_guard`, `unchecked_integer_overflow`, `integer_truncation`, `unchecked_address_cast`, `unchecked_array_access`, `oracle_price_manipulation`, `missing_nonce_validation`, `signature_replay`, `arbitrary_token_transfer`, `write_without_caller_check`, `rtlo`, `l2_to_l1_tainted_destination`, `l1_handler_unchecked_amount`, `l1_handler_payload_to_storage`, `l1_handler_unchecked_selector`, `l2_to_l1_unverified_amount`
 - Medium: `felt252_overflow`, `tx_origin_auth`, `divide_before_multiply`, `tainted_storage_key`, `hardcoded_address`, `block_timestamp_dependence`, `unchecked_transfer`, `weak_prng`, `pyth_unchecked_confidence`, `pyth_unchecked_publishtime`, `pyth_deprecated_function`, `tautological_compare`, `tautology`, `multiple_external_calls`, `unchecked_l1_message`, `view_state_modification`, `l2_to_l1_double_send`
 - Low: `incorrect_erc20_interface`, `incorrect_erc721_interface`, `calls_loop`, `write_after_write`, `reentrancy_events`, `unused_return`, `missing_event_emission`, `missing_events_access_control`, `missing_events_arithmetic`, `missing_zero_address_check`, `shadowing_builtin`, `shadowing_local`, `shadowing_state`
 - Info: `boolean_equality`, `costly_loop`, `cache_array_length`, `unindexed_event`, `unused_state`, `dead_code`
@@ -37,6 +38,8 @@ Use `shadowhare list-detectors` for runtime metadata (severity/confidence/descri
 
 ```bash
 shadowhare detect <PATH...> [options]
+shadowhare detect-diff --left <PATH...> --right <PATH...> [options]
+shadowhare print <summary|callgraph|attack-surface> <PATH...> [--format <human|json|dot>]
 shadowhare update-baseline <PATH...> [--baseline <file>]
 shadowhare list-detectors
 ```
@@ -45,6 +48,8 @@ Short CLI alias:
 
 ```bash
 shdr detect <PATH...> [options]
+shdr detect-diff --left <PATH...> --right <PATH...> [options]
+shdr print <summary|callgraph|attack-surface> <PATH...> [--format <human|json|dot>]
 ```
 
 ### `detect` options
@@ -56,8 +61,29 @@ shdr detect <PATH...> [options]
 - `--detectors <id1,id2,...>`
 - `--exclude <id1,id2,...>`
 - `--manifest <Scarb.toml path>`
-- `--strict`
+- `--strict[=true|false]` (fail if analysis guarantees are degraded, e.g. missing required debug info)
 - `--plugin <executable>` (repeatable; external detector plugins)
+
+### `print` options
+
+- `summary`: function/statement/compatibility overview
+- `callgraph`: function call graph (human/json/dot)
+- `attack-surface`: entrypoint-to-sink reachability summary
+- `--format <human|json|dot>` (default: `human`)
+  - `dot` is supported only by `callgraph`
+
+### `detect-diff` options
+
+- `--left <PATH...>` baseline/reference artifact set
+- `--right <PATH...>` candidate/new artifact set
+- `--format <human|json>` (default: `human`)
+- `--min-severity <info|low|medium|high|critical>` (default: `low`)
+- `--detectors <id1,id2,...>`
+- `--exclude <id1,id2,...>`
+- `--manifest <Scarb.toml path>`
+- `--strict[=true|false]`
+- `--plugin <executable>` (repeatable)
+- `--fail-on-new-severity <info|low|medium|high|critical>` (optional CI gate)
 
 ### Exit codes
 
@@ -67,6 +93,9 @@ shdr detect <PATH...> [options]
 
 If `--fail-on-new-only` is set, exit code `1` is based only on findings not
 present in baseline fingerprints.
+
+For `detect-diff`, exit code `1` means new findings were introduced
+(or, when `--fail-on-new-severity` is set, new findings at/above that threshold).
 
 ## Input Artifacts
 
@@ -94,7 +123,7 @@ Behavior:
 - If `SCARB_MANIFEST_PATH` is set and `--manifest` is not passed, it injects
   `--manifest <SCARB_MANIFEST_PATH>`.
 - If `SCARB_TARGET_DIR` is set and no explicit path is provided after
-  `detect`/`update-baseline`, it injects `<SCARB_TARGET_DIR>/<SCARB_PROFILE>`
+  `detect`/`print`/`update-baseline`, it injects `<SCARB_TARGET_DIR>/<SCARB_PROFILE>`
   (default profile fallback: `dev`).
 
 ## Configuration via `Scarb.toml`
@@ -183,6 +212,13 @@ Current loader behavior:
 - If compiler/Sierra version metadata is unavailable, analyzer warns and uses
   Tier3 best-effort mode.
 - Parse-only mode skips detector execution.
+
+## Strict Mode
+
+`--strict` converts degraded-analysis conditions into hard errors instead of
+warnings. In current runtime behavior, strict mode fails when core analysis
+requires missing debug-info guarantees (for detectors that declare
+`requires_debug_info`) or when unknown type/libfunc warnings degrade analysis.
 
 ## Accuracy/Heuristic Notes
 

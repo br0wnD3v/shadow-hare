@@ -4,12 +4,16 @@ use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
 use crate::loader::CompatibilityTier;
 
+pub mod account_execute_v0_block;
+pub mod account_interface_compliance;
+pub mod account_validate_syscalls;
 pub mod address_cast;
 pub mod array_access;
 pub mod boolean_equality;
 pub mod cache_array_length;
 pub mod calls_loop;
 pub mod costly_loop;
+pub mod deploy_tainted_class_hash;
 pub mod erc20_interface;
 pub mod erc721_interface;
 pub mod events;
@@ -17,6 +21,7 @@ pub mod events_access_control;
 pub mod events_arithmetic;
 pub mod felt252_overflow;
 pub mod hardcoded;
+pub mod initializer_replay;
 pub mod integer_overflow;
 pub mod l1_amount;
 pub mod l1_handler;
@@ -219,7 +224,12 @@ impl DetectorRegistry {
                 Box::new(reentrancy::Reentrancy),
                 Box::new(felt252_overflow::Felt252Overflow),
                 Box::new(library_call::ControlledLibraryCall),
+                Box::new(deploy_tainted_class_hash::DeploySyscallTaintedClassHash),
                 Box::new(upgrade::UnprotectedUpgrade),
+                Box::new(account_interface_compliance::AccountInterfaceCompliance),
+                Box::new(account_validate_syscalls::AccountValidateForbiddenSyscalls),
+                Box::new(account_execute_v0_block::AccountExecuteMissingV0Block),
+                Box::new(initializer_replay::InitializerReplayOrMissingGuard),
                 Box::new(integer_overflow::UncheckedIntegerOverflow),
                 Box::new(truncation::IntegerTruncation),
                 Box::new(address_cast::UncheckedAddressCast),
@@ -290,19 +300,43 @@ impl DetectorRegistry {
             .detectors
             .par_iter()
             .filter(|d| config.detectors.should_run(d.id()))
-            .filter(|d| {
+            .map(|d| {
                 let reqs = d.requirements();
-                // Skip if tier is below minimum
+                // Skip if tier is below minimum.
                 if program.compatibility < reqs.min_tier {
-                    return false;
+                    return (
+                        Vec::new(),
+                        vec![AnalyzerWarning::detector_skipped(
+                            d.id(),
+                            &format!(
+                                "requires min compatibility {}, got {}",
+                                reqs.min_tier, program.compatibility
+                            ),
+                        )],
+                    );
                 }
-                // Skip source-aware detectors if no debug info
+
+                // Enforce debug-info requirement globally.
+                if reqs.requires_debug_info && !program.has_debug_info {
+                    return (
+                        Vec::new(),
+                        vec![AnalyzerWarning::missing_debug_info(d.id())],
+                    );
+                }
+
+                // Skip source-aware detectors if no debug info.
                 if reqs.source_aware && !program.has_debug_info {
-                    return false;
+                    return (
+                        Vec::new(),
+                        vec![AnalyzerWarning::detector_skipped(
+                            d.id(),
+                            "source-aware detector requires debug info",
+                        )],
+                    );
                 }
-                true
+
+                d.run(program)
             })
-            .map(|d| d.run(program))
             .collect();
 
         let mut all_findings = Vec::new();

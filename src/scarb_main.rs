@@ -34,10 +34,10 @@ fn main() {
         let profile = std::env::var("SCARB_PROFILE").unwrap_or_else(|_| "dev".to_string());
         let artifacts_dir = format!("{target_dir}/{profile}");
 
-        // Inject target dir after "detect" or "update-baseline" subcommand
+        // Inject target dir after "detect", "print", or "update-baseline" subcommand
         let detect_idx = args
             .iter()
-            .position(|a| a == "detect" || a == "update-baseline");
+            .position(|a| a == "detect" || a == "print" || a == "update-baseline");
         if let Some(idx) = detect_idx {
             // Check if a path argument is already present after the subcommand
             let has_path_arg = args

@@ -79,14 +79,16 @@ impl Detector for WeakPrng {
 
                 let uses_entropy = inv.args.iter().any(|a| entropy_vars.contains(a));
                 if uses_entropy {
-                    let reaches_sensitive_sink =
-                        program.libfunc_registry.is_storage_write(&inv.libfunc_id)
-                            || name.contains("call_contract")
-                            || name.contains("send_message_to_l1")
-                            || name.contains("pedersen")
-                            || name.contains("poseidon")
-                            || name.contains("felt252_add")
-                            || name.contains("felt252_mul");
+                    // Keep this sink set narrow to avoid flagging benign usage such as:
+                    // - timestamp persisted for timelocks/expiry bookkeeping
+                    // - hashing for deterministic IDs/keys
+                    //
+                    // The detector targets env-derived values flowing into
+                    // pseudo-random arithmetic or cross-contract/message effects.
+                    let reaches_sensitive_sink = name.contains("call_contract")
+                        || name.contains("send_message_to_l1")
+                        || name.contains("felt252_add")
+                        || name.contains("felt252_mul");
 
                     if reaches_sensitive_sink {
                         findings.push(Finding::new(

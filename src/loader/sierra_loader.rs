@@ -6,7 +6,9 @@ use cairo_annotations::annotations::TryFromDebugInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AnalyzerError, AnalyzerWarning};
-use crate::loader::version::{ArtifactVersion, CompatibilityMatrix, CompatibilityTier};
+use crate::loader::version::{
+    metadata_source, ArtifactVersion, CompatibilityMatrix, CompatibilityTier, VersionMetadataSource,
+};
 
 /// Unified artifact type that we can produce from either format.
 #[derive(Debug, Clone)]
@@ -15,6 +17,8 @@ pub struct LoadedArtifact {
     pub format: ArtifactFormat,
     pub version: ArtifactVersion,
     pub compatibility: CompatibilityTier,
+    pub version_metadata_source: VersionMetadataSource,
+    pub compatibility_degraded_reason: Option<String>,
     pub program: SierraProgram,
     pub entry_points: EntryPoints,
     pub statement_locations: HashMap<usize, SourceLocation>,
@@ -263,6 +267,10 @@ pub struct RawContractClass {
     #[serde(default)]
     pub sierra_program_debug_info: Option<RawContractDebugInfo>,
     pub contract_class_version: Option<String>,
+    #[serde(default)]
+    pub compiler_version: Option<String>,
+    #[serde(default)]
+    pub sierra_version: Option<String>,
     pub entry_points_by_type: Option<RawEntryPointsByType>,
     #[serde(default)]
     pub abi: Option<serde_json::Value>,
@@ -421,11 +429,26 @@ fn load_raw_sierra(
 
     let artifact_version = ArtifactVersion {
         contract_class_version: None,
-        compiler_version: None,
-        sierra_version: None,
+        compiler_version: extract_top_level_string(
+            value,
+            &[
+                "compiler_version",
+                "cairo_compiler_version",
+                "cairo_version",
+            ],
+        ),
+        sierra_version: extract_top_level_string(
+            value,
+            &["sierra_version", "sierra_program_version"],
+        ),
     };
 
     let (compat, mut warnings) = crate::loader::version::negotiate(&artifact_version, matrix)?;
+    let version_metadata_source = metadata_source(&artifact_version);
+    let compatibility_degraded_reason = warnings
+        .iter()
+        .find(|w| w.kind == crate::error::WarningKind::IncompatibleVersion)
+        .map(|w| w.message.clone());
     let program = normalise_raw_program(raw, &mut warnings);
 
     Ok(LoadedArtifact {
@@ -433,6 +456,8 @@ fn load_raw_sierra(
         format: ArtifactFormat::RawSierraJson,
         version: artifact_version,
         compatibility: compat,
+        version_metadata_source,
+        compatibility_degraded_reason,
         program,
         entry_points: EntryPoints::default(),
         statement_locations: HashMap::new(),
@@ -453,11 +478,16 @@ fn load_contract_class(
 
     let artifact_version = ArtifactVersion {
         contract_class_version: raw.contract_class_version.clone(),
-        compiler_version: None,
-        sierra_version: None,
+        compiler_version: raw.compiler_version.clone(),
+        sierra_version: raw.sierra_version.clone(),
     };
 
     let (compat, mut warnings) = crate::loader::version::negotiate(&artifact_version, matrix)?;
+    let version_metadata_source = metadata_source(&artifact_version);
+    let compatibility_degraded_reason = warnings
+        .iter()
+        .find(|w| w.kind == crate::error::WarningKind::IncompatibleVersion)
+        .map(|w| w.message.clone());
 
     // Decode the encoded Sierra program from the contract class.
     let (program, statement_locations) = decode_contract_class_program(&raw, path, &mut warnings)?;
@@ -469,11 +499,18 @@ fn load_contract_class(
         format: ArtifactFormat::StarknetContractClass,
         version: artifact_version,
         compatibility: compat,
+        version_metadata_source,
+        compatibility_degraded_reason,
         program,
         entry_points,
         statement_locations,
         warnings,
     })
+}
+
+fn extract_top_level_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|k| value.get(k).and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
 /// Decode the Starknet contract class Sierra program encoding.

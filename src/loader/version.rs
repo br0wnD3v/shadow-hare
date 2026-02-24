@@ -7,7 +7,8 @@ use crate::error::{AnalyzerError, AnalyzerWarning};
 ///
 /// Ordering: Tier1 > Tier2 > Tier3 > ParseOnly > Unsupported (higher = better support).
 /// Derived `Ord` uses declaration order, so we declare worst-first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompatibilityTier {
     /// Completely unsupported — we refuse to continue.
     Unsupported,
@@ -33,6 +34,27 @@ impl std::fmt::Display for CompatibilityTier {
     }
 }
 
+/// Which artifact field provided (or failed to provide) version metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionMetadataSource {
+    CompilerVersion,
+    SierraVersion,
+    ContractClassVersion,
+    Unavailable,
+}
+
+impl std::fmt::Display for VersionMetadataSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompilerVersion => write!(f, "compiler_version"),
+            Self::SierraVersion => write!(f, "sierra_version"),
+            Self::ContractClassVersion => write!(f, "contract_class_version"),
+            Self::Unavailable => write!(f, "unavailable"),
+        }
+    }
+}
+
 /// Version information extracted from a Sierra artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactVersion {
@@ -42,6 +64,19 @@ pub struct ArtifactVersion {
     pub compiler_version: Option<String>,
     /// Sierra program encoding version.
     pub sierra_version: Option<String>,
+}
+
+/// Best-effort metadata source classification for reporting.
+pub fn metadata_source(artifact: &ArtifactVersion) -> VersionMetadataSource {
+    if artifact.compiler_version.is_some() {
+        VersionMetadataSource::CompilerVersion
+    } else if artifact.sierra_version.is_some() {
+        VersionMetadataSource::SierraVersion
+    } else if artifact.contract_class_version.is_some() {
+        VersionMetadataSource::ContractClassVersion
+    } else {
+        VersionMetadataSource::Unavailable
+    }
 }
 
 /// The current compatibility matrix (updated per release cadence).
@@ -95,19 +130,29 @@ pub fn negotiate(
 ) -> Result<(CompatibilityTier, Vec<AnalyzerWarning>), AnalyzerError> {
     let mut warnings = Vec::new();
 
-    // Try to parse a version from compiler_version or sierra_version fields.
-    let version_str = artifact
-        .compiler_version
-        .as_deref()
-        .or(artifact.sierra_version.as_deref());
+    // Try compiler_version first, then sierra_version, then a conservative
+    // contract_class_version mapping when it looks like a Cairo semver.
+    let (version_str, source) = select_version_candidate(artifact);
 
     let version = match version_str {
         Some(s) => parse_version_loose(s),
         None => {
             warnings.push(AnalyzerWarning {
                 kind: crate::error::WarningKind::IncompatibleVersion,
-                message: "No compiler version found in artifact — assuming Tier3 best-effort"
-                    .to_string(),
+                message: match source {
+                    VersionMetadataSource::ContractClassVersion => format!(
+                        "contract_class_version='{}' is present but cannot be mapped to a Cairo/Sierra semver — assuming Tier3 best-effort",
+                        artifact.contract_class_version.as_deref().unwrap_or("unknown")
+                    ),
+                    VersionMetadataSource::Unavailable => {
+                        "No compiler/sierra version found in artifact — assuming Tier3 best-effort"
+                            .to_string()
+                    }
+                    _ => {
+                        "No usable compiler/sierra version found in artifact — assuming Tier3 best-effort"
+                            .to_string()
+                    }
+                },
             });
             return Ok((CompatibilityTier::Tier3, warnings));
         }
@@ -119,7 +164,8 @@ pub fn negotiate(
             warnings.push(AnalyzerWarning {
                 kind: crate::error::WarningKind::IncompatibleVersion,
                 message: format!(
-                    "Could not parse version '{}'  — assuming Tier3 best-effort",
+                    "Could not parse {}='{}' — assuming Tier3 best-effort",
+                    source,
                     version_str.unwrap_or("unknown")
                 ),
             });
@@ -161,6 +207,26 @@ pub fn negotiate(
         }
         _ => Ok((tier, warnings)),
     }
+}
+
+fn select_version_candidate(artifact: &ArtifactVersion) -> (Option<&str>, VersionMetadataSource) {
+    if let Some(v) = artifact.compiler_version.as_deref() {
+        return (Some(v), VersionMetadataSource::CompilerVersion);
+    }
+    if let Some(v) = artifact.sierra_version.as_deref() {
+        return (Some(v), VersionMetadataSource::SierraVersion);
+    }
+    if let Some(v) = artifact.contract_class_version.as_deref() {
+        // contract_class_version can carry values like "0.1.0" that are not a
+        // Cairo compiler semver. Only treat it as negotiable when it looks like
+        // an actual Cairo major stream (2.x+).
+        let parsed = parse_version_loose(v);
+        if parsed.as_ref().is_some_and(|pv| pv.major >= 2) {
+            return (Some(v), VersionMetadataSource::ContractClassVersion);
+        }
+        return (None, VersionMetadataSource::ContractClassVersion);
+    }
+    (None, VersionMetadataSource::Unavailable)
 }
 
 /// Parse a version string that might have extra suffixes like "2.16.0 (abc123)".
@@ -220,5 +286,64 @@ mod tests {
             Some(Version::parse("2.16.0").unwrap())
         );
         assert_eq!(parse_version_loose("invalid"), None);
+    }
+
+    #[test]
+    fn metadata_source_priority() {
+        let a = ArtifactVersion {
+            contract_class_version: Some("0.1.0".to_string()),
+            compiler_version: Some("2.16.0".to_string()),
+            sierra_version: Some("2.15.0".to_string()),
+        };
+        assert_eq!(metadata_source(&a), VersionMetadataSource::CompilerVersion);
+
+        let b = ArtifactVersion {
+            contract_class_version: Some("0.1.0".to_string()),
+            compiler_version: None,
+            sierra_version: Some("2.15.0".to_string()),
+        };
+        assert_eq!(metadata_source(&b), VersionMetadataSource::SierraVersion);
+
+        let c = ArtifactVersion {
+            contract_class_version: Some("0.1.0".to_string()),
+            compiler_version: None,
+            sierra_version: None,
+        };
+        assert_eq!(
+            metadata_source(&c),
+            VersionMetadataSource::ContractClassVersion
+        );
+    }
+
+    #[test]
+    fn contract_class_version_hint_without_cairo_semver_degrades_to_tier3() {
+        let matrix = CompatibilityMatrix::default();
+        let artifact = ArtifactVersion {
+            contract_class_version: Some("0.1.0".to_string()),
+            compiler_version: None,
+            sierra_version: None,
+        };
+        let (tier, warnings) = negotiate(&artifact, &matrix).expect("negotiate");
+        assert_eq!(tier, CompatibilityTier::Tier3);
+        assert!(
+            warnings.iter().any(|w| {
+                w.message.contains("contract_class_version='0.1.0'")
+                    && w.message.contains("assuming Tier3 best-effort")
+            }),
+            "expected contract_class_version degradation warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn contract_class_version_cairo_semver_can_negotiate_tier() {
+        let matrix = CompatibilityMatrix::default();
+        let artifact = ArtifactVersion {
+            contract_class_version: Some("2.15.3".to_string()),
+            compiler_version: None,
+            sierra_version: None,
+        };
+        let (tier, warnings) = negotiate(&artifact, &matrix).expect("negotiate");
+        assert_eq!(tier, CompatibilityTier::Tier2);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 }

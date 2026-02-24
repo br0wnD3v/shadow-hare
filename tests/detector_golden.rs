@@ -918,6 +918,56 @@ fn seeded_pure_l2_to_l1_unverified_amount_fires() {
     );
 }
 
+#[test]
+fn seeded_pure_deploy_syscall_tainted_class_hash_fires() {
+    let (ids, count) = run_seeded("pure", "deploy_syscall_tainted_class_hash.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"deploy_syscall_tainted_class_hash".to_string()),
+        "deploy_syscall_tainted_class_hash not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_account_validate_forbidden_syscalls_fires() {
+    let (ids, count) = run_seeded("pure", "account_validate_forbidden_syscalls.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"account_validate_forbidden_syscalls".to_string()),
+        "account_validate_forbidden_syscalls not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_initializer_replay_or_missing_guard_fires() {
+    let (ids, count) = run_seeded("pure", "initializer_replay_or_missing_guard.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"initializer_replay_or_missing_guard".to_string()),
+        "initializer_replay_or_missing_guard not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_account_interface_compliance_fires() {
+    let (ids, count) = run_seeded("pure", "account_interface_compliance.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"account_interface_compliance".to_string()),
+        "account_interface_compliance not in {ids:?}"
+    );
+}
+
+#[test]
+fn seeded_pure_account_execute_missing_v0_block_fires() {
+    let (ids, count) = run_seeded("pure", "account_execute_missing_v0_block.sierra.json");
+    assert_eq!(count, 1, "Expected exactly 1 finding, got {count}: {ids:?}");
+    assert!(
+        ids.contains(&"account_execute_missing_v0_block".to_string()),
+        "account_execute_missing_v0_block not in {ids:?}"
+    );
+}
+
 // ── Replay / mutability / zero-address hardening regressions ────────────────
 
 #[test]

@@ -2,10 +2,12 @@ pub mod analysis;
 pub mod baseline;
 pub mod config;
 pub mod detectors;
+pub mod diff;
 pub mod error;
 pub mod ir;
 pub mod loader;
 pub mod output;
+pub mod printers;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,9 +15,9 @@ use std::process::Command;
 use crate::baseline::Baseline;
 use crate::config::{AnalyzerConfig, Suppression};
 use crate::detectors::{DetectorRegistry, Finding};
-use crate::error::{AnalyzerError, AnalyzerWarning};
+use crate::error::{AnalyzerError, AnalyzerWarning, WarningKind};
 use crate::ir::program::ProgramIR;
-use crate::loader::{sierra_loader, CompatibilityMatrix};
+use crate::loader::{sierra_loader, CompatibilityMatrix, CompatibilityTier, VersionMetadataSource};
 use crate::output::{build_sarif, JsonReport};
 
 /// Output format for analysis results.
@@ -32,8 +34,17 @@ pub struct AnalysisResult {
     pub findings: Vec<Finding>,
     pub warnings: Vec<AnalyzerWarning>,
     pub sources: Vec<String>,
+    pub compatibility: Vec<SourceCompatibility>,
     /// Findings that are NEW relative to the baseline (if baseline is in use).
     pub new_findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceCompatibility {
+    pub source: String,
+    pub compatibility_tier: CompatibilityTier,
+    pub metadata_source: VersionMetadataSource,
+    pub degraded_reason: Option<String>,
 }
 
 impl AnalysisResult {
@@ -67,11 +78,18 @@ pub fn analyse_paths(
     let mut all_findings: Vec<Finding> = Vec::new();
     let mut all_warnings: Vec<AnalyzerWarning> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
+    let mut compatibility: Vec<SourceCompatibility> = Vec::new();
 
     for path in paths {
         let artifact = sierra_loader::load_artifact(path, &matrix)?;
 
         sources.push(path.display().to_string());
+        compatibility.push(SourceCompatibility {
+            source: path.display().to_string(),
+            compatibility_tier: artifact.compatibility,
+            metadata_source: artifact.version_metadata_source,
+            degraded_reason: artifact.compatibility_degraded_reason.clone(),
+        });
 
         // Collect loader warnings before artifact is consumed by from_artifact.
         let loader_warnings = artifact.warnings.clone();
@@ -79,7 +97,6 @@ pub fn analyse_paths(
         all_warnings.extend(loader_warnings);
 
         // Skip detectors only in explicit parse-only mode.
-        use crate::loader::CompatibilityTier;
         if program.compatibility <= CompatibilityTier::ParseOnly {
             all_warnings.push(AnalyzerWarning {
                 kind: crate::error::WarningKind::IncompatibleVersion,
@@ -97,6 +114,20 @@ pub fn analyse_paths(
         enrich_findings_with_source_locations(&mut plugin_findings, &program);
         all_findings.extend(plugin_findings);
         all_warnings.extend(plugin_warnings);
+    }
+
+    if config.strict {
+        let strict_issues: Vec<String> = all_warnings
+            .iter()
+            .filter(|w| is_strict_blocking_warning(w))
+            .map(|w| w.message.clone())
+            .collect();
+        if !strict_issues.is_empty() {
+            return Err(AnalyzerError::Config(format!(
+                "Strict mode blocked analysis due to degraded guarantees:\n- {}",
+                strict_issues.join("\n- ")
+            )));
+        }
     }
 
     // Baseline comparison
@@ -120,8 +151,20 @@ pub fn analyse_paths(
         findings: all_findings,
         warnings: all_warnings,
         sources,
+        compatibility,
         new_findings,
     })
+}
+
+fn is_strict_blocking_warning(warning: &AnalyzerWarning) -> bool {
+    match warning.kind {
+        WarningKind::UnknownType | WarningKind::UnknownLibfunc | WarningKind::MissingDebugInfo => {
+            true
+        }
+        // Any compatibility downgrade is considered degraded guarantees in strict mode.
+        WarningKind::IncompatibleVersion => true,
+        WarningKind::DetectorSkipped => false,
+    }
 }
 
 fn enrich_findings_with_source_locations(findings: &mut [Finding], program: &ProgramIR) {
@@ -242,16 +285,26 @@ pub fn render_output(
         OutputFormat::Human => {
             let mut buf = Vec::new();
             let source = result.sources.join(", ");
-            output::human::print_report(&mut buf, &result.findings, &result.warnings, &source)
-                .map_err(|e| AnalyzerError::Io {
-                    path: PathBuf::from("<stdout>"),
-                    source: e,
-                })?;
+            output::human::print_report(
+                &mut buf,
+                &result.findings,
+                &result.warnings,
+                &result.compatibility,
+                &source,
+            )
+            .map_err(|e| AnalyzerError::Io {
+                path: PathBuf::from("<stdout>"),
+                source: e,
+            })?;
             Ok(String::from_utf8_lossy(&buf).into_owned())
         }
         OutputFormat::Json => {
-            let report =
-                JsonReport::build(&result.findings, &result.warnings, result.sources.clone());
+            let report = JsonReport::build(
+                &result.findings,
+                &result.warnings,
+                result.sources.clone(),
+                result.compatibility.clone(),
+            );
             report
                 .to_json_string()
                 .map_err(|e| AnalyzerError::Config(format!("JSON serialisation failed: {e}")))

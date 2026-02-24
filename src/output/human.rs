@@ -2,12 +2,14 @@ use std::io::Write;
 
 use crate::detectors::{Finding, Severity};
 use crate::error::AnalyzerWarning;
+use crate::SourceCompatibility;
 
 /// Print a human-readable report to the given writer.
 pub fn print_report<W: Write>(
     writer: &mut W,
     findings: &[Finding],
     warnings: &[AnalyzerWarning],
+    compatibility: &[SourceCompatibility],
     source: &str,
 ) -> std::io::Result<()> {
     // Header
@@ -31,6 +33,25 @@ pub fn print_report<W: Write>(
         "  Summary: {} critical, {} high, {} medium, {} low, {} info",
         counts.critical, counts.high, counts.medium, counts.low, counts.info
     )?;
+
+    if !compatibility.is_empty() {
+        writeln!(writer, "\n  Compatibility:")?;
+        for c in compatibility {
+            if let Some(reason) = &c.degraded_reason {
+                writeln!(
+                    writer,
+                    "    - {}: tier={} source={} (degraded: {})",
+                    c.source, c.compatibility_tier, c.metadata_source, reason
+                )?;
+            } else {
+                writeln!(
+                    writer,
+                    "    - {}: tier={} source={}",
+                    c.source, c.compatibility_tier, c.metadata_source
+                )?;
+            }
+        }
+    }
 
     // Warnings
     if !warnings.is_empty() {

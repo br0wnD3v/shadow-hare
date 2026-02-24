@@ -6,6 +6,13 @@ use clap::{Args, Parser, Subcommand};
 
 use shadowhare::config::{load_scarb_config, AnalyzerConfig, DetectorSelection};
 use shadowhare::detectors::{DetectorRegistry, Severity};
+use shadowhare::diff::{
+    analyse_diff_paths, render_diff_output, DiffOutputFormat as CoreDiffOutputFormat,
+};
+use shadowhare::printers::{
+    render_paths as render_printer_paths, PrinterFormat as CorePrinterFormat,
+    PrinterKind as CorePrinterKind,
+};
 use shadowhare::{analyse_paths, render_output, update_baseline, OutputFormat};
 
 // ── CLI definition ───────────────────────────────────────────────────────────
@@ -26,6 +33,10 @@ struct Cli {
 enum Command {
     /// Run detectors on Sierra artifacts.
     Detect(DetectArgs),
+    /// Compare findings between two versions (left vs right) by fingerprint.
+    DetectDiff(DetectDiffArgs),
+    /// Render structural printers (summary/callgraph/attack-surface).
+    Print(PrintArgs),
     /// Update the baseline file with the current set of findings.
     UpdateBaseline(UpdateBaselineArgs),
     /// List all available detectors.
@@ -68,8 +79,8 @@ struct DetectArgs {
     manifest: Option<PathBuf>,
 
     /// Strict mode: no fallback downgrades for unknown types.
-    #[arg(long)]
-    strict: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    strict: Option<bool>,
 
     /// External detector plugin executable (repeatable).
     /// Plugin protocol: `<plugin> <artifact_path>` and stdout JSON (findings[] or full report).
@@ -88,11 +99,90 @@ struct UpdateBaselineArgs {
     baseline: PathBuf,
 }
 
+#[derive(Args)]
+struct DetectDiffArgs {
+    /// Left side path(s): baseline/reference version.
+    #[arg(long = "left", required = true)]
+    left_paths: Vec<PathBuf>,
+
+    /// Right side path(s): candidate/new version.
+    #[arg(long = "right", required = true)]
+    right_paths: Vec<PathBuf>,
+
+    /// Output format.
+    #[arg(long, default_value = "human")]
+    format: DiffFormatArg,
+
+    /// Minimum severity to include in the diff analysis.
+    #[arg(long, default_value = "low")]
+    min_severity: SeverityArg,
+
+    /// Comma-separated list of detector IDs to run (default: all).
+    #[arg(long)]
+    detectors: Option<String>,
+
+    /// Comma-separated list of detector IDs to exclude.
+    #[arg(long)]
+    exclude: Option<String>,
+
+    /// Read config from Scarb.toml at this path.
+    #[arg(long)]
+    manifest: Option<PathBuf>,
+
+    /// Strict mode: no fallback downgrades for unknown types.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    strict: Option<bool>,
+
+    /// External detector plugin executable (repeatable).
+    #[arg(long = "plugin")]
+    plugins: Vec<String>,
+
+    /// If set, only fail (exit 1) when NEW findings at/above this severity appear.
+    #[arg(long)]
+    fail_on_new_severity: Option<SeverityArg>,
+}
+
+#[derive(Args)]
+struct PrintArgs {
+    /// Printer to run.
+    #[arg(value_enum)]
+    printer: PrinterArg,
+
+    /// Path(s) to .sierra.json or .contract_class.json files.
+    /// If a directory is provided, it is searched recursively.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+
+    /// Output format. `dot` is only supported by the callgraph printer.
+    #[arg(long, default_value = "human")]
+    format: PrinterFormatArg,
+}
+
 #[derive(Clone, clap::ValueEnum)]
 enum FormatArg {
     Human,
     Json,
     Sarif,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum PrinterArg {
+    Summary,
+    Callgraph,
+    AttackSurface,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum PrinterFormatArg {
+    Human,
+    Json,
+    Dot,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum DiffFormatArg {
+    Human,
+    Json,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -126,6 +216,35 @@ impl From<FormatArg> for OutputFormat {
     }
 }
 
+impl From<PrinterArg> for CorePrinterKind {
+    fn from(value: PrinterArg) -> Self {
+        match value {
+            PrinterArg::Summary => CorePrinterKind::Summary,
+            PrinterArg::Callgraph => CorePrinterKind::Callgraph,
+            PrinterArg::AttackSurface => CorePrinterKind::AttackSurface,
+        }
+    }
+}
+
+impl From<PrinterFormatArg> for CorePrinterFormat {
+    fn from(value: PrinterFormatArg) -> Self {
+        match value {
+            PrinterFormatArg::Human => CorePrinterFormat::Human,
+            PrinterFormatArg::Json => CorePrinterFormat::Json,
+            PrinterFormatArg::Dot => CorePrinterFormat::Dot,
+        }
+    }
+}
+
+impl From<DiffFormatArg> for CoreDiffOutputFormat {
+    fn from(value: DiffFormatArg) -> Self {
+        match value {
+            DiffFormatArg::Human => CoreDiffOutputFormat::Human,
+            DiffFormatArg::Json => CoreDiffOutputFormat::Json,
+        }
+    }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -133,6 +252,8 @@ fn main() {
 
     let result = match cli.command {
         Command::Detect(args) => run_detect(args),
+        Command::DetectDiff(args) => run_detect_diff(args),
+        Command::Print(args) => run_print(args),
         Command::UpdateBaseline(args) => run_update_baseline(args),
         Command::ListDetectors => run_list_detectors(),
     };
@@ -183,7 +304,9 @@ fn run_detect(args: DetectArgs) -> Result<i32> {
     }
     config.min_severity = args.min_severity.into();
     config.fail_on_new_only = args.fail_on_new_only;
-    config.strict = args.strict;
+    if let Some(strict) = args.strict {
+        config.strict = strict;
+    }
     if !args.plugins.is_empty() {
         config.plugin_commands.extend(args.plugins.clone());
     }
@@ -223,6 +346,79 @@ fn run_update_baseline(args: UpdateBaselineArgs) -> Result<i32> {
         result.findings.len(),
         args.baseline.display()
     );
+    Ok(0)
+}
+
+fn run_detect_diff(args: DetectDiffArgs) -> Result<i32> {
+    // Build config, merging Scarb.toml → CLI flags (CLI takes precedence)
+    let mut config = if let Some(manifest) = &args.manifest {
+        match load_scarb_config(manifest)? {
+            Some(scarb_cfg) => shadowhare::config::AnalyzerConfig::from_scarb(scarb_cfg)
+                .context("Invalid Scarb.toml [tool.shadowhare] config")?,
+            None => AnalyzerConfig::default(),
+        }
+    } else {
+        let cwd_manifest = std::env::current_dir()
+            .ok()
+            .map(|d| d.join("Scarb.toml"))
+            .filter(|p| p.exists());
+
+        if let Some(manifest) = cwd_manifest {
+            match load_scarb_config(&manifest)? {
+                Some(scarb_cfg) => shadowhare::config::AnalyzerConfig::from_scarb(scarb_cfg)
+                    .context("Invalid Scarb.toml [tool.shadowhare] config")?,
+                None => AnalyzerConfig::default(),
+            }
+        } else {
+            AnalyzerConfig::default()
+        }
+    };
+
+    // CLI overrides
+    if let Some(d) = &args.detectors {
+        config.detectors =
+            DetectorSelection::Include(d.split(',').map(|s| s.trim().to_string()).collect());
+    }
+    if let Some(e) = &args.exclude {
+        config.detectors =
+            DetectorSelection::Exclude(e.split(',').map(|s| s.trim().to_string()).collect());
+    }
+    config.min_severity = args.min_severity.into();
+    if let Some(strict) = args.strict {
+        config.strict = strict;
+    }
+    if !args.plugins.is_empty() {
+        config.plugin_commands.extend(args.plugins.clone());
+    }
+
+    let left_paths = resolve_paths(&args.left_paths);
+    let right_paths = resolve_paths(&args.right_paths);
+    if left_paths.is_empty() {
+        anyhow::bail!("No Sierra artifacts found for --left");
+    }
+    if right_paths.is_empty() {
+        anyhow::bail!("No Sierra artifacts found for --right");
+    }
+
+    let registry = DetectorRegistry::all();
+    let diff = analyse_diff_paths(&left_paths, &right_paths, &config, &registry)
+        .context("Diff analysis failed")?;
+
+    let output = render_diff_output(&diff, args.format.into()).context("Diff render failed")?;
+    print!("{output}");
+
+    Ok(diff.exit_code(args.fail_on_new_severity.map(Into::into)))
+}
+
+fn run_print(args: PrintArgs) -> Result<i32> {
+    let paths = resolve_paths(&args.paths);
+    if paths.is_empty() {
+        anyhow::bail!("No Sierra artifacts found at the provided paths");
+    }
+
+    let output = render_printer_paths(&paths, args.printer.into(), args.format.into())
+        .context("Printer render failed")?;
+    print!("{output}");
     Ok(0)
 }
 

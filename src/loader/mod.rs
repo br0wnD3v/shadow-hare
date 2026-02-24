@@ -6,4 +6,4 @@ pub use sierra_loader::{
     LibfuncDeclaration, LoadedArtifact, SierraId, SierraProgram, SourceLocation, Statement,
     TypeDeclaration,
 };
-pub use version::{ArtifactVersion, CompatibilityMatrix, CompatibilityTier};
+pub use version::{ArtifactVersion, CompatibilityMatrix, CompatibilityTier, VersionMetadataSource};
