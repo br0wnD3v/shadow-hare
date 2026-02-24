@@ -33,13 +33,13 @@ fn tier3_is_n_minus_2() {
 }
 
 #[test]
-fn old_versions_are_parse_only() {
+fn old_2x_versions_are_tier3_best_effort() {
     let matrix = CompatibilityMatrix::default();
     for v in &["2.5.0", "2.10.0", "2.13.1"] {
         assert_eq!(
             matrix.classify(&Version::parse(v).unwrap()),
-            CompatibilityTier::ParseOnly,
-            "Expected ParseOnly for {v}"
+            CompatibilityTier::Tier3,
+            "Expected Tier3 best-effort for {v}"
         );
     }
 }

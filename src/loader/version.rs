@@ -26,7 +26,7 @@ impl std::fmt::Display for CompatibilityTier {
         match self {
             Self::Tier1 => write!(f, "Tier1 (fully supported)"),
             Self::Tier2 => write!(f, "Tier2 (fully supported, N-1)"),
-            Self::Tier3 => write!(f, "Tier3 (best-effort, N-2)"),
+            Self::Tier3 => write!(f, "Tier3 (best-effort, N-2 and older 2.x)"),
             Self::ParseOnly => write!(f, "ParseOnly (no detector guarantees)"),
             Self::Unsupported => write!(f, "Unsupported"),
         }
@@ -49,7 +49,7 @@ pub struct ArtifactVersion {
 /// As of 2026-02-21:
 ///   Tier 1: Cairo/Sierra 2.16.x
 ///   Tier 2: 2.15.x
-///   Tier 3: 2.14.x
+///   Tier 3: 2.14.x and older 2.x (best-effort detector execution)
 pub struct CompatibilityMatrix {
     pub tier1: VersionReq,
     pub tier2: VersionReq,
@@ -67,16 +67,20 @@ impl Default for CompatibilityMatrix {
 }
 
 impl CompatibilityMatrix {
+    pub fn is_legacy_2x(&self, version: &Version) -> bool {
+        version.major == 2
+            && !self.tier1.matches(version)
+            && !self.tier2.matches(version)
+            && !self.tier3.matches(version)
+    }
+
     pub fn classify(&self, version: &Version) -> CompatibilityTier {
         if self.tier1.matches(version) {
             CompatibilityTier::Tier1
         } else if self.tier2.matches(version) {
             CompatibilityTier::Tier2
-        } else if self.tier3.matches(version) {
+        } else if self.tier3.matches(version) || self.is_legacy_2x(version) {
             CompatibilityTier::Tier3
-        } else if version.major == 2 {
-            // Known major, old minor
-            CompatibilityTier::ParseOnly
         } else {
             CompatibilityTier::Unsupported
         }
@@ -124,6 +128,7 @@ pub fn negotiate(
     };
 
     let tier = matrix.classify(&version);
+    let legacy_2x = matrix.is_legacy_2x(&version);
 
     match tier {
         CompatibilityTier::Unsupported => Err(AnalyzerError::UnsupportedVersion {
@@ -142,9 +147,15 @@ pub fn negotiate(
         CompatibilityTier::Tier3 => {
             warnings.push(AnalyzerWarning {
                 kind: crate::error::WarningKind::IncompatibleVersion,
-                message: format!(
-                    "Cairo {version} is Tier3 (N-2) — some detectors may skip gracefully"
-                ),
+                message: if legacy_2x {
+                    format!(
+                        "Cairo {version} is older than tested window (N-2) — running detectors in best-effort compatibility mode"
+                    )
+                } else {
+                    format!(
+                        "Cairo {version} is Tier3 (N-2) — some detectors may skip gracefully"
+                    )
+                },
             });
             Ok((tier, warnings))
         }
@@ -190,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             matrix.classify(&Version::parse("2.5.0").unwrap()),
-            CompatibilityTier::ParseOnly
+            CompatibilityTier::Tier3
         );
         assert_eq!(
             matrix.classify(&Version::parse("1.0.0").unwrap()),

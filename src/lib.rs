@@ -78,7 +78,7 @@ pub fn analyse_paths(
         let program = ProgramIR::from_artifact(artifact);
         all_warnings.extend(loader_warnings);
 
-        // Skip detectors if compatibility is below Tier3 parse-only
+        // Skip detectors only in explicit parse-only mode.
         use crate::loader::CompatibilityTier;
         if program.compatibility <= CompatibilityTier::ParseOnly {
             all_warnings.push(AnalyzerWarning {
