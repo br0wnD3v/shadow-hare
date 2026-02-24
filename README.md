@@ -185,6 +185,7 @@ Top-level fields:
 - `generated_at` (Unix timestamp string)
 - `analyzer_version`
 - `sources`
+- `artifacts` (per-source compatibility tier + metadata provenance)
 - `findings`
 - `warnings`
 - `summary`
@@ -218,7 +219,8 @@ Current loader behavior:
 `--strict` converts degraded-analysis conditions into hard errors instead of
 warnings. In current runtime behavior, strict mode fails when core analysis
 requires missing debug-info guarantees (for detectors that declare
-`requires_debug_info`) or when unknown type/libfunc warnings degrade analysis.
+`requires_debug_info`), unknown type/libfunc warnings degrade analysis, or
+compatibility warnings indicate best-effort/downgraded execution.
 
 ## Accuracy/Heuristic Notes
 

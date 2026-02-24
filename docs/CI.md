@@ -1,70 +1,91 @@
 # CI Integration Guide
 
-## GitHub Actions
+Shadowhare CI is split into:
+
+1. SARIF security scanning (`.github/workflows/shadowhare.yml`)
+2. Quality gates (`.github/workflows/qa-harness.yml`)
+
+## Security Scanning (SARIF)
+
+Current workflow (`shadowhare.yml`) runs the official GitHub Action:
 
 ```yaml
-# .github/workflows/security.yml
-name: Cairo Security Analysis
-
+name: Shadowhare Scan
 on: [push, pull_request]
 
 jobs:
-  analyze:
+  shadowhare:
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install shadowhare
-        run: cargo install shadowhare --locked
-
-      - name: Build Starknet contracts
-        run: scarb build
-
-      - name: Run shadowhare (SARIF output)
-        run: |
-          shadowhare detect target/dev/ --format sarif > analyzer.sarif
-        continue-on-error: true
-
-      - name: Upload SARIF to GitHub Security
+      - name: Run Shadowhare
+        uses: shadowhare/action@v1
+        with:
+          paths: target/dev
+          format: sarif
+          min_severity: medium
+          output: shadowhare-results.sarif
+      - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: analyzer.sarif
+          sarif_file: shadowhare-results.sarif
 ```
 
-## Baseline workflow
+Equivalent local command:
 
 ```bash
-# First time: create a baseline
-shadowhare detect target/dev/ --format json > /dev/null
-shadowhare update-baseline target/dev/ --baseline .shadowhare-baseline.json
-git add .shadowhare-baseline.json
-git commit -m "chore: add shadowhare baseline"
+shadowhare detect target/dev --format sarif --min-severity medium > shadowhare-results.sarif
+```
 
-# CI: fail only on new findings
-shadowhare detect target/dev/ \
+## Quality Gates (QA Harness + Metadata Regression)
+
+Current workflow (`qa-harness.yml`) enforces:
+
+1. Detector docs quality lint:
+   - `python3 scripts/docs_lint.py`
+2. QA precision/recall gates:
+   - `python3 scripts/qa_harness.py --enforce-gates --output-json corpus/qa_harness_report_ci.json`
+3. Compatibility metadata regression:
+   - `python3 scripts/compatibility_inventory.py --output-json corpus/metadata/compatibility_inventory_ci.json --baseline corpus/metadata/compatibility_inventory_baseline.json --enforce-no-regression`
+
+This workflow uploads:
+
+- `corpus/qa_harness_report_ci.json`
+- `corpus/metadata/compatibility_inventory_ci.json`
+
+## Baseline Workflow (Finding Diff)
+
+```bash
+# Create baseline
+shadowhare update-baseline target/dev --baseline .shadowhare-baseline.json
+
+# Fail only on findings that are new vs baseline
+shadowhare detect target/dev \
   --baseline .shadowhare-baseline.json \
   --fail-on-new-only
 ```
 
-## Diff workflow (PR vs baseline artifact set)
+## Artifact-to-Artifact Diff Workflow
 
 ```bash
-# Compare two artifact trees and fail only on new high+ issues
 shadowhare detect-diff \
   --left artifacts/mainline \
   --right artifacts/pr \
   --fail-on-new-severity high
 ```
 
-## Exit codes
+## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | No actionable findings |
-| 1 | Findings at/above severity threshold |
-| 2 | Runtime/config error |
+| 1 | Findings at/above threshold (or new findings in diff/baseline mode) |
+| 2 | Runtime/config/usage error |
 
-## Scarb.toml configuration
+## Scarb.toml Configuration
 
 ```toml
 [tool.shadowhare]
@@ -76,13 +97,12 @@ strict = false
 
 [[tool.shadowhare.suppress]]
 id = "reentrancy"
-location_hash = "a1b2c3d4"  # from --format json output fingerprint
+location_hash = "a1b2c3d4"  # finding fingerprint
 ```
 
 ## Suppression
 
-To suppress a specific finding, copy its `fingerprint` from the JSON output
-into `Scarb.toml`:
+Suppress one concrete finding:
 
 ```toml
 [[tool.shadowhare.suppress]]
@@ -90,7 +110,7 @@ id = "felt252_overflow"
 location_hash = "ff00aa11"
 ```
 
-To suppress all findings from a detector:
+Suppress all findings for one detector:
 
 ```toml
 [[tool.shadowhare.suppress]]
