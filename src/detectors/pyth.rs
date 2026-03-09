@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
+use crate::analysis::sanitizers::all_general_sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Pyth oracle read without confidence interval validation.
 pub struct PythUncheckedConfidence;
@@ -13,8 +15,6 @@ pub struct PythUncheckedPublishtime;
 
 /// Pyth deprecated/unsafe function usage.
 pub struct PythDeprecatedFunction;
-
-const PASS_THROUGH_LIBFUNCS: &[&str] = &["store_temp", "rename", "dup", "snapshot_take"];
 
 const CONFIDENCE_KEYWORDS: &[&str] = &["confidence", "conf"];
 const FRESHNESS_KEYWORDS: &[&str] = &[
@@ -27,6 +27,48 @@ const FRESHNESS_KEYWORDS: &[&str] = &[
 ];
 const DEPRECATED_PYTH_KEYWORDS: &[&str] =
     &["get_price_unsafe", "get_ema_price_unsafe", "deprecated"];
+
+/// Check if unsanitized taint reaches any sink: Return, storage_write, or call_contract.
+fn taint_reaches_any_sink(
+    cfg: &crate::analysis::cfg::Cfg,
+    block_taint: &std::collections::HashMap<crate::analysis::cfg::BlockIdx, HashSet<u64>>,
+    program: &ProgramIR,
+) -> bool {
+    for block in &cfg.blocks {
+        let Some(tainted) = block_taint.get(&block.id) else {
+            continue;
+        };
+        if tainted.is_empty() {
+            continue;
+        }
+        for &stmt_idx in &block.stmts {
+            let Some(stmt) = program.statements.get(stmt_idx) else {
+                continue;
+            };
+            match stmt {
+                Statement::Return(vars) => {
+                    if vars.iter().any(|v| tainted.contains(v)) {
+                        return true;
+                    }
+                }
+                Statement::Invocation(inv) => {
+                    let name = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .or(inv.libfunc_id.debug_name.as_deref())
+                        .unwrap_or("");
+
+                    let is_sink = program.libfunc_registry.is_storage_write(&inv.libfunc_id)
+                        || name.contains("call_contract");
+                    if is_sink && inv.args.iter().any(|a| tainted.contains(a)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
 
 impl Detector for PythUncheckedConfidence {
     fn id(&self) -> &'static str {
@@ -57,6 +99,10 @@ impl Detector for PythUncheckedConfidence {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
+        // Build confidence sanitizers: general + confidence keywords
+        let mut sanitizers = all_general_sanitizers();
+        sanitizers.extend_from_slice(CONFIDENCE_KEYWORDS);
+
         for func in program.external_functions() {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
@@ -64,9 +110,9 @@ impl Detector for PythUncheckedConfidence {
             }
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            let mut pyth_tainted: HashSet<u64> = HashSet::new();
+            // Collect taint seeds: results of pyth price fetch calls
+            let mut seeds: HashSet<u64> = HashSet::new();
             let mut first_fetch_site: Option<usize> = None;
-            let mut has_confidence_guard = false;
 
             for (local_idx, stmt) in stmts.iter().enumerate() {
                 let Some(inv) = stmt.as_invocation() else {
@@ -75,58 +121,51 @@ impl Detector for PythUncheckedConfidence {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if is_pyth_price_fetch(libfunc_name) {
                     first_fetch_site.get_or_insert(start + local_idx);
                     for branch in &inv.branches {
                         for r in &branch.results {
-                            pyth_tainted.insert(*r);
-                        }
-                    }
-                    continue;
-                }
-
-                let uses_pyth_value = inv.args.iter().any(|a| pyth_tainted.contains(a));
-                if uses_pyth_value && CONFIDENCE_KEYWORDS.iter().any(|k| libfunc_name.contains(k)) {
-                    has_confidence_guard = true;
-                }
-
-                if uses_pyth_value
-                    && PASS_THROUGH_LIBFUNCS
-                        .iter()
-                        .any(|k| libfunc_name.contains(k))
-                {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            pyth_tainted.insert(*r);
+                            seeds.insert(*r);
                         }
                     }
                 }
             }
 
+            if seeds.is_empty() {
+                continue;
+            }
+
+            // Run CFG-based taint analysis
+            let (cfg, block_taint) =
+                run_taint_analysis(program, func.idx, seeds, &sanitizers, &["function_call"]);
+
+            // Check if unsanitized taint reaches any sink (Return, storage_write, call_contract)
+            if !taint_reaches_any_sink(&cfg, &block_taint, program) {
+                continue;
+            }
+
             if let Some(site) = first_fetch_site {
-                if !has_confidence_guard {
-                    findings.push(Finding::new(
-                        self.id(),
-                        self.severity(),
-                        self.confidence(),
-                        "Pyth confidence interval not checked",
-                        format!(
-                            "Function '{}': Pyth price read at stmt {} has no observable confidence \
-                             check before use. Validate confidence to avoid low-quality price updates.",
-                            func.name, site
-                        ),
-                        Location {
-                            file: program.source.display().to_string(),
-                            function: func.name.clone(),
-                            statement_idx: Some(site),
-                            line: None,
-                            col: None,
-                        },
-                    ));
-                }
+                findings.push(Finding::new(
+                    self.id(),
+                    self.severity(),
+                    self.confidence(),
+                    "Pyth confidence interval not checked",
+                    format!(
+                        "Function '{}': Pyth price read at stmt {} has no observable confidence \
+                         check before use. Validate confidence to avoid low-quality price updates.",
+                        func.name, site
+                    ),
+                    Location {
+                        file: program.source.display().to_string(),
+                        function: func.name.clone(),
+                        statement_idx: Some(site),
+                        line: None,
+                        col: None,
+                    },
+                ));
             }
         }
 
@@ -163,6 +202,10 @@ impl Detector for PythUncheckedPublishtime {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
+        // Build freshness sanitizers: general + freshness keywords
+        let mut sanitizers = all_general_sanitizers();
+        sanitizers.extend_from_slice(FRESHNESS_KEYWORDS);
+
         for func in program.external_functions() {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
@@ -170,9 +213,9 @@ impl Detector for PythUncheckedPublishtime {
             }
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            let mut pyth_tainted: HashSet<u64> = HashSet::new();
+            // Collect taint seeds: results of unbounded pyth fetch calls
+            let mut seeds: HashSet<u64> = HashSet::new();
             let mut first_unbounded_fetch_site: Option<usize> = None;
-            let mut has_freshness_guard = false;
 
             for (local_idx, stmt) in stmts.iter().enumerate() {
                 let Some(inv) = stmt.as_invocation() else {
@@ -181,58 +224,51 @@ impl Detector for PythUncheckedPublishtime {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if is_unbounded_pyth_fetch(libfunc_name) {
                     first_unbounded_fetch_site.get_or_insert(start + local_idx);
                     for branch in &inv.branches {
                         for r in &branch.results {
-                            pyth_tainted.insert(*r);
-                        }
-                    }
-                    continue;
-                }
-
-                let uses_pyth_value = inv.args.iter().any(|a| pyth_tainted.contains(a));
-                if uses_pyth_value && FRESHNESS_KEYWORDS.iter().any(|k| libfunc_name.contains(k)) {
-                    has_freshness_guard = true;
-                }
-
-                if uses_pyth_value
-                    && PASS_THROUGH_LIBFUNCS
-                        .iter()
-                        .any(|k| libfunc_name.contains(k))
-                {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            pyth_tainted.insert(*r);
+                            seeds.insert(*r);
                         }
                     }
                 }
             }
 
+            if seeds.is_empty() {
+                continue;
+            }
+
+            // Run CFG-based taint analysis
+            let (cfg, block_taint) =
+                run_taint_analysis(program, func.idx, seeds, &sanitizers, &["function_call"]);
+
+            // Check if unsanitized taint reaches any sink (Return, storage_write, call_contract)
+            if !taint_reaches_any_sink(&cfg, &block_taint, program) {
+                continue;
+            }
+
             if let Some(site) = first_unbounded_fetch_site {
-                if !has_freshness_guard {
-                    findings.push(Finding::new(
-                        self.id(),
-                        self.severity(),
-                        self.confidence(),
-                        "Pyth publish-time not checked",
-                        format!(
-                            "Function '{}': unbounded Pyth price read at stmt {} has no observable \
-                             publish-time/freshness check. Stale oracle data can be exploited.",
-                            func.name, site
-                        ),
-                        Location {
-                            file: program.source.display().to_string(),
-                            function: func.name.clone(),
-                            statement_idx: Some(site),
-                            line: None,
-                            col: None,
-                        },
-                    ));
-                }
+                findings.push(Finding::new(
+                    self.id(),
+                    self.severity(),
+                    self.confidence(),
+                    "Pyth publish-time not checked",
+                    format!(
+                        "Function '{}': unbounded Pyth price read at stmt {} has no observable \
+                         publish-time/freshness check. Stale oracle data can be exploited.",
+                        func.name, site
+                    ),
+                    Location {
+                        file: program.source.display().to_string(),
+                        function: func.name.clone(),
+                        statement_idx: Some(site),
+                        line: None,
+                        col: None,
+                    },
+                ));
             }
         }
 
@@ -285,7 +321,7 @@ impl Detector for PythDeprecatedFunction {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if !libfunc_name.contains("pyth") {

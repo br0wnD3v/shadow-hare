@@ -71,7 +71,7 @@ fn run() -> Result<()> {
                 let name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("<unknown>");
                 println!(
                     "{} {:>6}: {} args={:?} branches={}",

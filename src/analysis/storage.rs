@@ -3,8 +3,16 @@ use crate::loader::Statement;
 /// Storage access classification for a single statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageAccess {
-    Read { stmt_idx: usize },
-    Write { stmt_idx: usize },
+    Read {
+        stmt_idx: usize,
+        /// The first argument (storage address variable) of the syscall, if available.
+        addr_var: Option<u64>,
+    },
+    Write {
+        stmt_idx: usize,
+        /// The first argument (storage address variable) of the syscall, if available.
+        addr_var: Option<u64>,
+    },
 }
 
 /// Classify all storage accesses in a function's statement range.
@@ -18,9 +26,11 @@ pub fn find_storage_accesses(
         .filter_map(|(idx, stmt)| {
             let inv = stmt.as_invocation()?;
             if libfuncs.is_storage_read(&inv.libfunc_id) {
-                Some(StorageAccess::Read { stmt_idx: idx })
+                let addr_var = inv.args.first().copied();
+                Some(StorageAccess::Read { stmt_idx: idx, addr_var })
             } else if libfuncs.is_storage_write(&inv.libfunc_id) {
-                Some(StorageAccess::Write { stmt_idx: idx })
+                let addr_var = inv.args.first().copied();
+                Some(StorageAccess::Write { stmt_idx: idx, addr_var })
             } else {
                 None
             }

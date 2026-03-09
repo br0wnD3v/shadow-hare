@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
+use crate::analysis::sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Detects when an external call result is stored directly in contract storage
 /// without any intermediate validation or arithmetic.
@@ -13,17 +15,16 @@ use crate::loader::CompatibilityTier;
 /// to skew the oracle's return value, then exploit the stale/manipulated price
 /// that is now in storage.
 ///
-/// Vulnerable pattern:
-///   call_contract(oracle, GET_PRICE_SEL, ...) → price
-///   storage_write(sys, slot, price)           ← raw price stored
+/// Detection strategy (CFG + taint):
+/// 1. For each external function, seed taint from `call_contract_syscall` results.
+/// 2. Propagate taint through CFG with `run_taint_analysis`.
+/// 3. Sanitize with hash operations (TWAP/aggregation) and storage reads.
+/// 4. If tainted value reaches `storage_write`, report.
 ///
-/// Safe pattern: apply TWAP, sanity bounds checks, or compare against a
-/// secondary oracle before writing.
+/// Unlike the previous linear-only approach, this propagates taint through
+/// arithmetic (division, scaling) and respects CFG branching — catching
+/// manipulation paths even after intermediate computation.
 pub struct OraclePriceManipulation;
-
-/// Pass-through libfuncs that move a value without transforming it.
-/// Taint propagates through these without change.
-const PASS_THROUGH_LIBFUNCS: &[&str] = &["store_temp", "rename", "dup", "snapshot_take"];
 
 impl Detector for OraclePriceManipulation {
     fn id(&self) -> &'static str {
@@ -56,67 +57,100 @@ impl Detector for OraclePriceManipulation {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
+        // Sanitizers for oracle manipulation:
+        // - Hash ops break manipulation (TWAP, aggregation)
+        // - Constant producers (not oracle-derived)
+        // - Storage reads (values from storage, not from oracle)
+        // - Comparison/assertion ops indicate validation
+        let mut oracle_sanitizers = sanitizers::hash_only_sanitizers();
+        oracle_sanitizers.extend_from_slice(sanitizers::STORAGE_READ);
+        // Add comparison operators as sanitizers — if the oracle value
+        // is validated against bounds, that's a mitigation
+        oracle_sanitizers.extend_from_slice(&[
+            "felt252_is_zero",
+            "assert_le",
+            "assert_lt",
+            "assert_eq",
+            "assert_ne",
+        ]);
+
         for func in program.external_functions() {
+            // Skip compiler-generated wrappers
+            if func.name.contains("__wrapper__") || func.name.contains("__external__") {
+                continue;
+            }
+
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
+            let end_clamped = end.min(program.statements.len());
 
-            // Track vars produced by call_contract_syscall as "oracle tainted".
-            // Only propagate taint through pass-through ops — any arithmetic
-            // or logic operation is considered a sanitizer for this detector.
-            let mut oracle_tainted: HashSet<u64> = HashSet::new();
+            // Phase 1: Find call_contract results to seed as oracle-tainted.
+            let mut oracle_seeds: HashSet<u64> = HashSet::new();
+            let mut has_call_contract = false;
 
-            for (local_idx, stmt) in stmts.iter().enumerate() {
+            for stmt in &program.statements[start..end_clamped] {
                 let inv = match stmt.as_invocation() {
                     Some(inv) => inv,
                     None => continue,
                 };
 
-                let libfunc_name = program
+                let name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
-                // External call results become oracle-tainted
-                let is_external_call = libfunc_name.contains("call_contract_syscall")
-                    || libfunc_name.contains("call_contract");
-
-                if is_external_call {
+                if name.contains("call_contract_syscall") || name.contains("call_contract") {
+                    has_call_contract = true;
                     for branch in &inv.branches {
-                        for r in &branch.results {
-                            oracle_tainted.insert(*r);
+                        for &r in &branch.results {
+                            oracle_seeds.insert(r);
                         }
                     }
-                    continue;
                 }
+            }
 
-                // Pass-through: propagate oracle taint unchanged
-                let is_pass_through = PASS_THROUGH_LIBFUNCS
-                    .iter()
-                    .any(|p| libfunc_name.contains(p));
+            if !has_call_contract || oracle_seeds.is_empty() {
+                continue;
+            }
 
-                if is_pass_through {
-                    if inv.args.iter().any(|a| oracle_tainted.contains(a)) {
-                        for branch in &inv.branches {
-                            for r in &branch.results {
-                                oracle_tainted.insert(*r);
-                            }
-                        }
+            // Phase 2: Run CFG-based taint analysis.
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                oracle_seeds,
+                &oracle_sanitizers,
+                &["function_call"],
+            );
+
+            // Phase 3: Check if oracle taint reaches storage_write.
+            let mut found = false;
+            for block_id in cfg.topological_order() {
+                if found {
+                    break;
+                }
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    if !program.libfunc_registry.is_storage_write(&inv.libfunc_id) {
+                        continue;
                     }
-                    continue;
-                }
 
-                // Storage write: check if the VALUE argument (arg[2]) is oracle-tainted
-                let is_storage_write = program.libfunc_registry.is_storage_write(&inv.libfunc_id);
-
-                if is_storage_write {
+                    // Storage write: check if the VALUE argument is oracle-tainted.
+                    // Arg layout: storage_write(system, address, value)
                     let value_is_tainted = inv
                         .args
                         .get(2)
-                        .map(|v| oracle_tainted.contains(v))
+                        .map(|v| tainted.is_some_and(|t| t.contains(v)))
                         .unwrap_or(false);
 
                     if value_is_tainted {
@@ -127,24 +161,23 @@ impl Detector for OraclePriceManipulation {
                             "Oracle price stored without validation",
                             format!(
                                 "Function '{}': at stmt {} the value written to storage \
-                                 comes directly from an external call result without \
-                                 intermediate validation. An attacker can manipulate \
-                                 the external call's return value via flash loan.",
-                                func.name,
-                                start + local_idx
+                                 derives from an external call result without adequate \
+                                 validation. An attacker can manipulate the external \
+                                 call's return value via flash loan.",
+                                func.name, stmt_idx
                             ),
                             Location {
                                 file: program.source.display().to_string(),
                                 function: func.name.clone(),
-                                statement_idx: Some(start + local_idx),
+                                statement_idx: Some(stmt_idx),
                                 line: None,
                                 col: None,
                             },
                         ));
+                        found = true;
+                        break;
                     }
                 }
-                // Arithmetic / other ops: do NOT propagate oracle taint
-                // (transformation implies at least some processing)
             }
         }
 

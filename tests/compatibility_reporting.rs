@@ -128,8 +128,10 @@ fn strict_mode_fails_on_compatibility_degradation() {
     let tmp = write_raw_sierra_with_versions(None, None);
 
     let registry = DetectorRegistry::all();
-    let mut config = AnalyzerConfig::default();
-    config.strict = true;
+    let config = AnalyzerConfig {
+        strict: true,
+        ..AnalyzerConfig::default()
+    };
 
     let paths = vec![PathBuf::from(tmp.path())];
     let err = analyse_paths(&paths, &config, &registry).expect_err("strict mode should fail");

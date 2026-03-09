@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use tracing::debug;
+
 use crate::loader::{BranchTarget, Statement};
 
 /// Index into the ProgramIR.statements vec.
@@ -34,6 +36,17 @@ pub struct BlockEdge {
     pub target: BlockIdx,
     /// Variables produced on this edge.
     pub results: Vec<u64>,
+}
+
+/// A natural loop identified via back-edge detection from the dominator tree.
+#[derive(Debug, Clone)]
+pub struct NaturalLoop {
+    /// The loop header block (target of the back-edge).
+    pub header: BlockIdx,
+    /// All blocks in the loop body (includes header).
+    pub body: HashSet<BlockIdx>,
+    /// The block that branches back to the header.
+    pub back_edge_source: BlockIdx,
 }
 
 /// A Control Flow Graph for a single function.
@@ -130,6 +143,8 @@ impl Cfg {
             }
         }
 
+        debug!(blocks = blocks.len(), stmts = end - start, "CFG built");
+
         Self {
             blocks,
             entry: 0,
@@ -151,6 +166,195 @@ impl Cfg {
 
     pub fn successors(&self, block: BlockIdx) -> Vec<BlockIdx> {
         successors(&self.blocks[block].terminator)
+    }
+
+    /// Compute the immediate dominator tree using the Cooper-Harvey-Kennedy algorithm.
+    ///
+    /// Returns a map from each block to its immediate dominator. The entry block
+    /// is its own dominator (i.e., `idom[entry] == entry`).
+    ///
+    /// Reference: Cooper, Harvey, Kennedy — "A Simple, Fast Dominance Algorithm" (2001)
+    pub fn dominators(&self) -> HashMap<BlockIdx, BlockIdx> {
+        let n = self.blocks.len();
+        if n == 0 {
+            return HashMap::new();
+        }
+
+        // Compute reverse post-order (RPO) numbering.
+        let rpo = self.reverse_post_order();
+        let mut rpo_num = vec![0usize; n];
+        for (order, &block) in rpo.iter().enumerate() {
+            rpo_num[block] = order;
+        }
+
+        // idom[b] = immediate dominator of b.  USIZE_MAX = undefined.
+        let undefined: usize = usize::MAX;
+        let mut idom = vec![undefined; n];
+        idom[self.entry] = self.entry;
+
+        let intersect = |mut b1: usize, mut b2: usize, idom: &[usize]| -> usize {
+            while b1 != b2 {
+                while rpo_num[b1] > rpo_num[b2] {
+                    b1 = idom[b1];
+                }
+                while rpo_num[b2] > rpo_num[b1] {
+                    b2 = idom[b2];
+                }
+            }
+            b1
+        };
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &b in &rpo {
+                if b == self.entry {
+                    continue;
+                }
+                let preds = self.predecessors.get(&b);
+                let preds = match preds {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                // Pick the first predecessor that has an idom already.
+                let mut new_idom = undefined;
+                for &p in preds {
+                    if idom[p] != undefined {
+                        new_idom = p;
+                        break;
+                    }
+                }
+                if new_idom == undefined {
+                    continue;
+                }
+
+                // Intersect with other processed predecessors.
+                for &p in preds {
+                    if p == new_idom {
+                        continue;
+                    }
+                    if idom[p] != undefined {
+                        new_idom = intersect(p, new_idom, &idom);
+                    }
+                }
+
+                if idom[b] != new_idom {
+                    idom[b] = new_idom;
+                    changed = true;
+                }
+            }
+        }
+
+        idom.into_iter()
+            .enumerate()
+            .filter(|(_, dom)| *dom != undefined)
+            .collect()
+    }
+
+    /// Check if `guard_block` dominates `sink_block` using a precomputed
+    /// dominator tree. Prefer this over `dominates()` when checking multiple
+    /// pairs — compute the tree once with `dominators()` and reuse it.
+    pub fn dominates_with(
+        idom: &HashMap<BlockIdx, BlockIdx>,
+        guard_block: BlockIdx,
+        sink_block: BlockIdx,
+    ) -> bool {
+        if guard_block == sink_block {
+            return true;
+        }
+        let mut current = sink_block;
+        loop {
+            let Some(&dom) = idom.get(&current) else {
+                return false;
+            };
+            if dom == guard_block {
+                return true;
+            }
+            if dom == current {
+                return false;
+            }
+            current = dom;
+        }
+    }
+
+    /// Check if `guard_block` dominates `sink_block`.
+    ///
+    /// NOTE: This recomputes the dominator tree on every call. If you need
+    /// to check multiple pairs, use `dominators()` + `dominates_with()`.
+    pub fn dominates(&self, guard_block: BlockIdx, sink_block: BlockIdx) -> bool {
+        let idom = self.dominators();
+        Self::dominates_with(&idom, guard_block, sink_block)
+    }
+
+    /// Compute reverse post-order (RPO) traversal.
+    ///
+    /// RPO is the standard iteration order for forward dataflow analyses.
+    /// For reducible CFGs (which Sierra code almost always produces), a forward
+    /// analysis converges in a single pass over RPO.
+    pub fn reverse_post_order(&self) -> Vec<BlockIdx> {
+        let mut visited = vec![false; self.blocks.len()];
+        let mut post_order = Vec::with_capacity(self.blocks.len());
+        self.rpo_dfs(self.entry, &mut visited, &mut post_order);
+        post_order.reverse();
+        post_order
+    }
+
+    fn rpo_dfs(&self, block: BlockIdx, visited: &mut Vec<bool>, post_order: &mut Vec<BlockIdx>) {
+        if visited[block] {
+            return;
+        }
+        visited[block] = true;
+        for succ in self.successors(block) {
+            self.rpo_dfs(succ, visited, post_order);
+        }
+        post_order.push(block);
+    }
+
+    /// Find natural loops via back-edge detection from the dominator tree.
+    ///
+    /// For each edge (A→B) where B dominates A, B is a loop header and the
+    /// body is all blocks that can reach A without going through B (plus B).
+    pub fn natural_loops(&self) -> Vec<NaturalLoop> {
+        let idom = self.dominators();
+        let mut loops = Vec::new();
+
+        for block in &self.blocks {
+            for succ in successors(&block.terminator) {
+                // A back-edge exists when succ dominates block.
+                if Self::dominates_with(&idom, succ, block.id) {
+                    let header = succ;
+                    let back_edge_source = block.id;
+
+                    // Collect the loop body: all blocks that can reach
+                    // back_edge_source without leaving through header.
+                    let mut body = HashSet::new();
+                    body.insert(header);
+
+                    if header != back_edge_source {
+                        body.insert(back_edge_source);
+                        let mut worklist = vec![back_edge_source];
+                        while let Some(b) = worklist.pop() {
+                            if let Some(preds) = self.predecessors.get(&b) {
+                                for &pred in preds {
+                                    if body.insert(pred) {
+                                        worklist.push(pred);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    loops.push(NaturalLoop {
+                        header,
+                        body,
+                        back_edge_source,
+                    });
+                }
+            }
+        }
+
+        loops
     }
 
     /// Topological order (approximate, ignores back edges).
@@ -279,5 +483,146 @@ mod tests {
             "Expected multiple blocks, got {}",
             cfg.blocks.len()
         );
+    }
+
+    #[test]
+    fn dominators_empty_cfg() {
+        let cfg = Cfg::build(&[], 0, 0);
+        let idom = cfg.dominators();
+        // Entry dominates itself.
+        assert_eq!(idom.get(&0), Some(&0));
+    }
+
+    #[test]
+    fn dominators_linear_chain() {
+        // Block 0 → Block 1 → Return
+        let stmts = vec![
+            invocation_stmt("felt252_add", vec![BranchTarget::Fallthrough]),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+        let idom = cfg.dominators();
+        // Entry dominates all blocks.
+        assert_eq!(idom.get(&0), Some(&0));
+    }
+
+    #[test]
+    fn dominates_entry_dominates_all() {
+        // Block 0: branch to 1 or 2
+        // Block 1: return
+        // Block 2: return
+        let stmts = vec![
+            invocation_stmt(
+                "felt252_is_zero",
+                vec![BranchTarget::Fallthrough, BranchTarget::Statement(2)],
+            ),
+            Statement::Return(vec![]),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+
+        // Block 0 (entry) should dominate all reachable blocks.
+        for block in &cfg.blocks {
+            assert!(
+                cfg.dominates(0, block.id),
+                "Entry should dominate block {}",
+                block.id
+            );
+        }
+    }
+
+    #[test]
+    fn dominates_sibling_blocks_do_not_dominate_each_other() {
+        // Block 0: branch to 1 or 2
+        // Block 1: return
+        // Block 2: return
+        let stmts = vec![
+            invocation_stmt(
+                "felt252_is_zero",
+                vec![BranchTarget::Fallthrough, BranchTarget::Statement(2)],
+            ),
+            Statement::Return(vec![]),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+
+        if cfg.blocks.len() >= 3 {
+            // Block 1 should NOT dominate Block 2 (they are siblings).
+            assert!(!cfg.dominates(1, 2));
+            assert!(!cfg.dominates(2, 1));
+        }
+    }
+
+    #[test]
+    fn natural_loops_detects_simple_loop() {
+        // stmt 0: setup (fallthrough)
+        // stmt 1: loop body (fallthrough)
+        // stmt 2: conditional: back-edge to stmt 1 or fallthrough to stmt 3
+        // stmt 3: return
+        let stmts = vec![
+            invocation_stmt("felt252_add", vec![BranchTarget::Fallthrough]),
+            invocation_stmt("felt252_add", vec![BranchTarget::Fallthrough]),
+            invocation_stmt(
+                "felt252_is_zero",
+                vec![BranchTarget::Statement(1), BranchTarget::Fallthrough],
+            ),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+        let loops = cfg.natural_loops();
+        assert!(
+            !loops.is_empty(),
+            "Should detect at least one loop, got none. Blocks: {}",
+            cfg.blocks.len()
+        );
+        // The loop header should be the block containing stmt 1.
+        let lp = &loops[0];
+        assert!(lp.body.len() >= 2, "Loop body should have at least 2 blocks");
+    }
+
+    #[test]
+    fn natural_loops_calls_loop_fixture() {
+        // Exact structure of calls_loop seeded fixture:
+        // stmt 0: call_contract_syscall (Fallthrough)
+        // stmt 1: loop_condition (Fallthrough + Statement(0))
+        // stmt 2: Return
+        let stmts = vec![
+            invocation_stmt("call_contract_syscall", vec![BranchTarget::Fallthrough]),
+            invocation_stmt(
+                "loop_condition",
+                vec![BranchTarget::Fallthrough, BranchTarget::Statement(0)],
+            ),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+        let loops = cfg.natural_loops();
+        assert!(
+            !loops.is_empty(),
+            "Should detect back-edge to stmt 0. Blocks: {}, predecessors: {:?}",
+            cfg.blocks.len(),
+            cfg.predecessors
+        );
+        let lp = &loops[0];
+        // Verify call_contract stmt 0 is in the loop body
+        let call_block_in_loop = cfg.blocks.iter().any(|b| {
+            lp.body.contains(&b.id) && b.stmts.contains(&0)
+        });
+        assert!(call_block_in_loop, "Block containing stmt 0 should be in loop body");
+    }
+
+    #[test]
+    fn natural_loops_no_loop_in_acyclic_cfg() {
+        // Two branches, no back-edges.
+        let stmts = vec![
+            invocation_stmt(
+                "felt252_is_zero",
+                vec![BranchTarget::Fallthrough, BranchTarget::Statement(2)],
+            ),
+            Statement::Return(vec![]),
+            Statement::Return(vec![]),
+        ];
+        let cfg = Cfg::build(&stmts, 0, stmts.len());
+        let loops = cfg.natural_loops();
+        assert!(loops.is_empty(), "Acyclic CFG should have no loops");
     }
 }

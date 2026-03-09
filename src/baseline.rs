@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::detectors::Finding;
 use crate::error::AnalyzerError;
@@ -26,8 +27,10 @@ impl Baseline {
             source: e,
         })?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| AnalyzerError::Baseline(format!("Failed to parse baseline: {e}")))
+        let baseline: Self = serde_json::from_str(&content)
+            .map_err(|e| AnalyzerError::Baseline(format!("Failed to parse baseline: {e}")))?;
+        debug!(entries = baseline.fingerprints.len(), path = %path.display(), "Baseline loaded");
+        Ok(baseline)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), AnalyzerError> {
@@ -49,7 +52,7 @@ impl Baseline {
 
     /// Returns only findings whose fingerprint is NOT in the baseline.
     pub fn new_findings<'a>(&self, findings: &'a [Finding]) -> Vec<&'a Finding> {
-        findings
+        let result: Vec<_> = findings
             .iter()
             .filter(|f| {
                 f.fingerprint
@@ -57,7 +60,13 @@ impl Baseline {
                     .map(|fp| !self.fingerprints.contains(fp))
                     .unwrap_or(true)
             })
-            .collect()
+            .collect();
+        debug!(
+            new = result.len(),
+            total = findings.len(),
+            "Baseline comparison"
+        );
+        result
     }
 
     pub fn is_new(&self, finding: &Finding) -> bool {

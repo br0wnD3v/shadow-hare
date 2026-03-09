@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+
+use crate::analysis::sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
@@ -10,31 +14,32 @@ use crate::loader::{CompatibilityTier, Statement};
 /// Failing to check this allows any Ethereum address to trigger the handler,
 /// which is a critical access-control vulnerability.
 ///
-/// Detection strategy (Sierra-only):
+/// Detection strategy (CFG + taint):
 /// 1. Find functions classified as L1_HANDLER.
-/// 2. Check whether the first parameter variable (from_address) is used in
-///    any conditional branch or equality check.
-/// 3. If not used in a check, report as unchecked.
+/// 2. Seed taint from from_address (param[1], the first felt252).
+/// 3. Use `run_taint_analysis` with sanitizers that include comparison ops.
+/// 4. If taint reaches a storage write or external call without being sanitized
+///    by a comparison, report.
+///
+/// Unlike the old direct-var-usage approach, this propagates taint through
+/// intermediate computations and respects CFG branching.
 pub struct UncheckedL1Handler;
 
 /// Libfunc patterns that represent comparison / validation operations.
-const COMPARISON_LIBFUNCS: &[&str] = &[
+/// When from_address flows into one of these, it's being validated.
+const VALIDATION_SANITIZERS: &[&str] = &[
     "felt252_is_zero",
-    "felt252_sub",
-    "felt252_add",
-    "u256_eq",
-    "contract_address_to_felt252",
-    "into_felt252",
     "assert_eq",
     "assert_ne",
-    "bool_not",
-    "branch_align",
-    // equality checks on various integer types
+    "assert_le",
+    "assert_lt",
     "u128_eq",
     "u64_eq",
     "u32_eq",
     "u16_eq",
     "u8_eq",
+    "u256_eq",
+    "contract_address_to_felt252",
 ];
 
 impl Detector for UncheckedL1Handler {
@@ -67,61 +72,129 @@ impl Detector for UncheckedL1Handler {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
-        for func in program.l1_handler_functions() {
-            // The first two params of an L1 handler are:
-            //   param[0]: implicit System arg
-            //   param[1]: from_address: felt252   ← this is what we track
-            //
-            // In Sierra, params are numbered starting from 0. The from_address
-            // is param variable ID 0 or 1 depending on implicit args.
-            // We track all param variables to be safe.
-            let param_var_ids: Vec<u64> = func.raw.params.iter().map(|(id, _)| *id).collect();
-
-            if param_var_ids.is_empty() {
-                // No parameters — definitely can't validate from_address
-                findings.push(make_finding(
-                    self,
-                    program,
-                    &func.name,
-                    None,
-                    "L1 handler has no parameters — cannot validate from_address",
-                ));
-                continue;
+        // Build sanitizer set: comparisons + standard const/hash/identity producers.
+        // When from_address flows into a comparison or is hashed for storage lookup,
+        // it's being validated.
+        let mut from_addr_sanitizers = sanitizers::all_general_sanitizers();
+        for s in VALIDATION_SANITIZERS {
+            if !from_addr_sanitizers.contains(s) {
+                from_addr_sanitizers.push(s);
             }
+        }
 
-            // Identify the from_address variable. In Starknet ABI, after implicit
-            // args (like System context), the first explicit param is from_address.
-            // We heuristically pick the first felt252 param.
+        for func in program.l1_handler_functions() {
+            // L1 handler param layout:
+            //   param[0]: System (implicit)
+            //   param[1]: from_address: felt252
+            //   param[2+]: message payload
+            //
+            // We taint only from_address — the first felt252 param.
             let from_address_var = find_from_address_var(&func.raw.params, program);
             let from_address_var = match from_address_var {
                 Some(v) => v,
-                None => {
-                    // Cannot identify — conservative: skip with warning
-                    continue;
-                }
+                None => continue,
             };
 
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            // Check if from_address_var is ever used in a comparison/branch
-            let is_validated = is_variable_validated(from_address_var, stmts, program);
+            let seeds: HashSet<u64> = [from_address_var].into_iter().collect();
 
-            if !is_validated {
-                findings.push(make_finding(
-                    self,
-                    program,
-                    &func.name,
-                    Some(start),
-                    &format!(
-                        "L1 handler '{}': from_address (var {}) is never compared or validated. \
-                         Any Ethereum address can call this handler.",
-                        func.name, from_address_var
-                    ),
-                ));
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                seeds,
+                &from_addr_sanitizers,
+                &["function_call"],
+            );
+
+            // Check if from_address taint is sanitized (comparison reached).
+            // If taint survives to any storage_write or call_contract, from_address
+            // was used without validation.
+            let mut found_unsanitized_use = false;
+
+            for block_id in cfg.topological_order() {
+                if found_unsanitized_use {
+                    break;
+                }
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    let libfunc_name = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .or(inv.libfunc_id.debug_name.as_deref())
+                        .unwrap_or("");
+
+                    // If from_address is still tainted at a sensitive sink,
+                    // it wasn't validated.
+                    let is_sensitive = libfunc_name.contains("call_contract")
+                        || program.libfunc_registry.is_storage_write(&inv.libfunc_id);
+
+                    if is_sensitive {
+                        let from_still_tainted =
+                            tainted.is_some_and(|t| t.contains(&from_address_var));
+                        if from_still_tainted {
+                            findings.push(Finding::new(
+                                self.id(),
+                                self.severity(),
+                                self.confidence(),
+                                "Unchecked L1 handler from_address",
+                                format!(
+                                    "L1 handler '{}': from_address (var {}) is never compared \
+                                     or validated before sensitive operation at stmt {}. \
+                                     Any Ethereum address can call this handler.",
+                                    func.name, from_address_var, stmt_idx
+                                ),
+                                Location {
+                                    file: program.source.display().to_string(),
+                                    function: func.name.clone(),
+                                    statement_idx: Some(stmt_idx),
+                                    line: None,
+                                    col: None,
+                                },
+                            ));
+                            found_unsanitized_use = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Fallback: if no sensitive sinks but from_address is never sanitized
+            // anywhere in the function, still flag it.
+            if !found_unsanitized_use {
+                let any_block_sanitized =
+                    block_taint.values().any(|t| !t.contains(&from_address_var));
+                if !any_block_sanitized && !block_taint.is_empty() {
+                    findings.push(Finding::new(
+                        self.id(),
+                        self.severity(),
+                        self.confidence(),
+                        "Unchecked L1 handler from_address",
+                        format!(
+                            "L1 handler '{}': from_address (var {}) is never compared \
+                             or validated. Any Ethereum address can call this handler.",
+                            func.name, from_address_var
+                        ),
+                        Location {
+                            file: program.source.display().to_string(),
+                            function: func.name.clone(),
+                            statement_idx: Some(start),
+                            line: None,
+                            col: None,
+                        },
+                    ));
+                }
             }
         }
 
@@ -143,58 +216,4 @@ fn find_from_address_var(
     }
     // Fallback: second param if no type info
     params.get(1).map(|(id, _)| *id)
-}
-
-fn is_variable_validated(var: u64, stmts: &[Statement], program: &ProgramIR) -> bool {
-    for stmt in stmts {
-        let inv = match stmt.as_invocation() {
-            Some(inv) => inv,
-            None => continue,
-        };
-
-        // If var is used as an argument to a comparison libfunc, it's validated
-        if inv.args.contains(&var) {
-            let is_comparison = COMPARISON_LIBFUNCS
-                .iter()
-                .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
-
-            if is_comparison {
-                return true;
-            }
-
-            // Also: if the libfunc has 2+ branches and var is an arg,
-            // it's likely being branched on (e.g. felt252_is_zero)
-            if inv.branches.len() >= 2 {
-                return true;
-            }
-        }
-
-        // Track variable propagation: if var flows into a result that IS compared,
-        // mark the results as derived from from_address.
-        // (Simplified: we don't do full taint here — just direct usage.)
-    }
-    false
-}
-
-fn make_finding(
-    detector: &UncheckedL1Handler,
-    program: &ProgramIR,
-    func_name: &str,
-    stmt_idx: Option<usize>,
-    description: &str,
-) -> Finding {
-    Finding::new(
-        detector.id(),
-        detector.severity(),
-        detector.confidence(),
-        "Unchecked L1 handler from_address",
-        description.to_string(),
-        Location {
-            file: program.source.display().to_string(),
-            function: func_name.to_string(),
-            statement_idx: stmt_idx,
-            line: None,
-            col: None,
-        },
-    )
 }

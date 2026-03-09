@@ -55,7 +55,7 @@ impl Detector for TautologyCondition {
                 let name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if name.contains("bool_const")

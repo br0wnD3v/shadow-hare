@@ -9,7 +9,6 @@
 ///
 /// We delegate to the same logic as shadowhare but auto-discover
 /// Sierra artifacts from SCARB_TARGET_DIR.
-
 fn main() {
     // Scarb passes the subcommand name as argv[1] when invoking scarb-<name>.
     // Strip it so clap sees the right arguments.

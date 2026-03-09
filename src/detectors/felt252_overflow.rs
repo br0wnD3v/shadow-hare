@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::analysis::callgraph::{CallGraph, FunctionSummaries};
-use crate::analysis::cfg::{BlockIdx, Cfg};
-use crate::analysis::dataflow::{run_forward, ForwardAnalysis};
+use crate::analysis::cfg::Cfg;
+use crate::analysis::dataflow::{self, run_forward, ForwardAnalysis};
+use crate::analysis::sanitizers;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
@@ -15,31 +16,21 @@ use crate::loader::CompatibilityTier;
 ///
 /// Heuristic: flag functions that perform felt252 arithmetic on values derived
 /// from user input (external function parameters) without explicit range checks.
+///
+/// Improvement: uses per-variable range-check tracking instead of a function-wide
+/// boolean. Join = intersection, so a variable is only considered range-checked
+/// if it is checked on ALL paths reaching the arithmetic operation.
 pub struct Felt252Overflow;
 
 const FELT252_ARITH_LIBFUNCS: &[&str] = &["felt252_add", "felt252_sub", "felt252_mul"];
-const RANGE_CHECK_LIBFUNCS: &[&str] = &[
-    "felt252_is_zero",
-    "u128_from_felt252",
-    "u256_from_felt252",
-    "assert_le_felt252",
-    "assert_lt_felt252",
-];
-const SANITIZER_LIBFUNCS: &[&str] = &[
-    "storage_base_address_const",
-    "pedersen",
-    "poseidon",
-    "hades_permutation",
-    "felt252_const",
-    "contract_address_const",
-    "get_caller_address",
-    "get_contract_address",
-];
 
 #[derive(Clone, Eq, PartialEq)]
 struct FeltFlowState {
     tainted: HashSet<u64>,
-    has_range_check: bool,
+    /// Variables that have been range-checked on the current path.
+    /// Join = intersection: a variable is only considered checked if checked
+    /// on ALL predecessor paths.
+    range_checked_vars: HashSet<u64>,
 }
 
 struct Felt252TaintAnalysis<'a> {
@@ -55,7 +46,7 @@ impl<'a> ForwardAnalysis for Felt252TaintAnalysis<'a> {
     fn bottom(&self) -> Self::Domain {
         FeltFlowState {
             tainted: self.seeds.clone(),
-            has_range_check: false,
+            range_checked_vars: HashSet::new(),
         }
     }
 
@@ -69,23 +60,33 @@ impl<'a> ForwardAnalysis for Felt252TaintAnalysis<'a> {
             .program
             .libfunc_registry
             .generic_id(&inv.libfunc_id)
-            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+            .or(inv.libfunc_id.debug_name.as_deref())
             .unwrap_or("");
 
         let mut next = state.clone();
-        if RANGE_CHECK_LIBFUNCS
-            .iter()
-            .any(|p| libfunc_name.contains(p))
-        {
-            next.has_range_check = true;
+
+        // Range-check libfuncs mark their input variables as range-checked.
+        if sanitizers::matches_any(libfunc_name, sanitizers::RANGE_CHECK_LIBFUNCS) {
+            for &arg in &inv.args {
+                next.range_checked_vars.insert(arg);
+            }
+            // Also mark outputs as checked (they are bounded integers).
+            for branch in &inv.branches {
+                for &result in &branch.results {
+                    next.range_checked_vars.insert(result);
+                }
+            }
         }
 
-        if SANITIZER_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {
+        // Sanitizers break taint chain.
+        if sanitizers::matches_any(libfunc_name, &sanitizers::summary_sanitizers()) {
             return next;
         }
 
         let any_arg_tainted = inv.args.iter().any(|a| next.tainted.contains(a));
 
+        // Inter-procedural: propagate taint through function_call if callee
+        // has unsafe felt252 arithmetic on its parameters.
         if libfunc_name == "function_call" {
             if any_arg_tainted {
                 if let Some(callee_idx) = self
@@ -124,9 +125,12 @@ impl<'a> ForwardAnalysis for Felt252TaintAnalysis<'a> {
     fn join(&self, a: &Self::Domain, b: &Self::Domain) -> Self::Domain {
         FeltFlowState {
             tainted: a.tainted.union(&b.tainted).copied().collect(),
-            // Preserve prior detector semantics: any observed range check in the
-            // function suppresses the heuristic.
-            has_range_check: a.has_range_check || b.has_range_check,
+            // Intersection: a variable is only range-checked if checked on ALL paths.
+            range_checked_vars: a
+                .range_checked_vars
+                .intersection(&b.range_checked_vars)
+                .copied()
+                .collect(),
         }
     }
 }
@@ -161,35 +165,22 @@ impl Detector for Felt252Overflow {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
-        // Build inter-procedural summaries first so function_call edges can carry
-        // taint evidence from helper functions.
         let callgraph = CallGraph::build(program);
         let summaries = FunctionSummaries::compute(program, &callgraph);
 
-        // Run only on entry-point functions to avoid helper-level FP inflation.
         for func in program.functions.iter().filter(|f| f.is_entrypoint()) {
+            // Skip compiler-generated wrapper functions. These perform felt252
+            // arithmetic for serialization/deserialization, not for business logic.
+            // The arithmetic is safe because it operates on well-typed inputs.
+            if func.name.contains("__wrapper__") || func.name.contains("__external__") {
+                continue;
+            }
+
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
             let end = end.min(program.statements.len());
-
-            // Preserve legacy suppression behavior: any range-check libfunc
-            // present in the function body suppresses this heuristic entirely.
-            let has_any_range_check = program.statements[start..end]
-                .iter()
-                .filter_map(|stmt| stmt.as_invocation())
-                .any(|inv| {
-                    let name = program
-                        .libfunc_registry
-                        .generic_id(&inv.libfunc_id)
-                        .or_else(|| inv.libfunc_id.debug_name.as_deref())
-                        .unwrap_or("");
-                    RANGE_CHECK_LIBFUNCS.iter().any(|p| name.contains(p))
-                });
-            if has_any_range_check {
-                continue;
-            }
 
             let seeds: HashSet<u64> = func.raw.params.iter().map(|(id, _)| *id).collect();
             let analysis = Felt252TaintAnalysis {
@@ -204,7 +195,7 @@ impl Detector for Felt252Overflow {
             let mut felt252_arith_sites: Vec<(usize, String)> = Vec::new();
             for block_id in cfg.topological_order() {
                 let block = &cfg.blocks[block_id];
-                let mut state = block_entry_state(&analysis, &cfg, block_id, &block_out);
+                let mut state = dataflow::block_entry_state(&analysis, &cfg, block_id, &block_out);
 
                 for &stmt_idx in &block.stmts {
                     let stmt = &program.statements[stmt_idx];
@@ -212,11 +203,15 @@ impl Detector for Felt252Overflow {
                         let libfunc_name = program
                             .libfunc_registry
                             .generic_id(&inv.libfunc_id)
-                            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                            .or(inv.libfunc_id.debug_name.as_deref())
                             .unwrap_or("");
-                        let any_arg_tainted = inv.args.iter().any(|a| state.tainted.contains(a));
 
-                        if any_arg_tainted && !state.has_range_check {
+                        // Check if any tainted argument is NOT range-checked on this path.
+                        let has_unchecked_tainted_arg = inv.args.iter().any(|a| {
+                            state.tainted.contains(a) && !state.range_checked_vars.contains(a)
+                        });
+
+                        if has_unchecked_tainted_arg {
                             if FELT252_ARITH_LIBFUNCS
                                 .iter()
                                 .any(|p| libfunc_name.contains(p))
@@ -286,37 +281,4 @@ impl Detector for Felt252Overflow {
 
         (findings, warnings)
     }
-}
-
-fn block_entry_state<A: ForwardAnalysis>(
-    analysis: &A,
-    cfg: &Cfg,
-    block_id: BlockIdx,
-    block_out: &HashMap<BlockIdx, A::Domain>,
-) -> A::Domain {
-    if block_id == cfg.entry {
-        return analysis.bottom();
-    }
-
-    let Some(preds) = cfg.predecessors.get(&block_id) else {
-        return analysis.bottom();
-    };
-    if preds.is_empty() {
-        return analysis.bottom();
-    }
-
-    let mut it = preds.iter();
-    let first = it.next().expect("preds is non-empty");
-    let mut acc = block_out
-        .get(first)
-        .cloned()
-        .unwrap_or_else(|| analysis.bottom());
-    for pred in it {
-        let pred_out = block_out
-            .get(pred)
-            .cloned()
-            .unwrap_or_else(|| analysis.bottom());
-        acc = analysis.join(&acc, &pred_out);
-    }
-    acc
 }

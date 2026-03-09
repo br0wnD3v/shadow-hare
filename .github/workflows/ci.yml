@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Check (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, "1.75"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        if: matrix.rust == 'stable'
+        run: cargo fmt --check
+
+      - name: Clippy
+        if: matrix.rust == 'stable'
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Test
+        run: cargo test
+
+  # Ensure all binaries build correctly
+  binaries:
+    name: Binary smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build all binaries
+        run: cargo build --bins
+
+      - name: Verify binaries exist
+        run: |
+          test -f target/debug/shadowhare
+          test -f target/debug/shdr
+          test -f target/debug/scarb-shadowhare
+          test -f target/debug/scarb-shdr
+
+      - name: List detectors
+        run: target/debug/shdr list-detectors
+
+      - name: Run on fixtures
+        run: |
+          target/debug/shdr detect fixtures/vulnerable/ --format json --min-severity info | head -50
+          target/debug/shdr detect fixtures/clean/ --format human --min-severity info

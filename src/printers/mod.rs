@@ -1,3 +1,8 @@
+mod data_dependence;
+mod function_signatures;
+mod ir_dump;
+mod storage_layout_printer;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -16,6 +21,10 @@ pub enum PrinterKind {
     Summary,
     Callgraph,
     AttackSurface,
+    DataDependence,
+    StorageLayout,
+    FunctionSignatures,
+    IrDump,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +46,10 @@ pub fn render_paths(
         PrinterKind::Summary => render_summary(&loaded, format),
         PrinterKind::Callgraph => render_callgraph(&loaded, format),
         PrinterKind::AttackSurface => render_attack_surface(&loaded, format),
+        PrinterKind::DataDependence => data_dependence::render(&loaded, format),
+        PrinterKind::StorageLayout => storage_layout_printer::render(&loaded, format),
+        PrinterKind::FunctionSignatures => function_signatures::render(&loaded, format),
+        PrinterKind::IrDump => ir_dump::render(&loaded, format),
     }
 }
 
@@ -121,7 +134,7 @@ fn build_summary_artifact(loaded: &LoadedProgram) -> SummaryArtifact {
     let warnings = loaded
         .warnings
         .iter()
-        .map(|w| format_warning(w))
+        .map(format_warning)
         .collect::<Vec<_>>();
 
     SummaryArtifact {
@@ -630,7 +643,7 @@ fn compute_direct_sinks(program: &ProgramIR) -> Vec<BTreeSet<SinkKind>> {
             };
             let name = program
                 .get_libfunc_name(&inv.libfunc_id)
-                .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                .or(inv.libfunc_id.debug_name.as_deref())
                 .unwrap_or("");
 
             if name.contains("storage_write") {

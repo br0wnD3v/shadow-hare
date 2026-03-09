@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::callgraph::CallGraph;
+use crate::analysis::cfg::Cfg;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
+use crate::ir::components::DetectedComponents;
 use crate::ir::program::ProgramIR;
 use crate::loader::{BranchTarget, CompatibilityTier, Invocation, Statement};
 
@@ -12,14 +14,9 @@ use crate::loader::{BranchTarget, CompatibilityTier, Invocation, Statement};
 /// Upgradeable contracts must gate `replace_class` behind structural access
 /// control, not naming conventions.
 ///
-/// This detector considers an upgrade protected only when, before the first
-/// `replace_class` in the function, there is a check/branch whose operands are
-/// dataflow-derived from BOTH:
-/// - caller identity (`get_caller_address` / `get_execution_info`)
-/// - storage reads (owner/admin slot fetch path)
-///
-/// If no such structural guard exists, the upgrade is treated as effectively
-/// permissionless.
+/// This detector uses CFG + dominator analysis: an upgrade is protected only
+/// when a guard block (containing a check whose operands derive from BOTH
+/// caller identity and storage) dominates ALL replace_class blocks.
 pub struct UnprotectedUpgrade;
 
 const REPLACE_CLASS_LIBFUNCS: &[&str] = &["replace_class_syscall", "replace_class"];
@@ -64,6 +61,14 @@ impl Detector for UnprotectedUpgrade {
     fn run(&self, program: &ProgramIR) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
         let mut findings = Vec::new();
         let warnings = Vec::new();
+
+        // If OZ Upgradeable + access control are both detected, the upgrade
+        // is governed by the component's internal guard. Suppress findings.
+        let oz = DetectedComponents::detect(program);
+        if oz.has_guarded_upgrade() {
+            return (findings, warnings);
+        }
+
         let callgraph = CallGraph::build(program);
         let mut guard_cache: HashMap<usize, bool> = HashMap::new();
         let mut storage_return_cache: HashMap<usize, bool> = HashMap::new();
@@ -73,45 +78,151 @@ impl Detector for UnprotectedUpgrade {
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
+            let end = end.min(program.statements.len());
 
-            // Find replace_class invocations
-            let replace_sites: Vec<usize> = stmts
-                .iter()
-                .enumerate()
-                .filter_map(|(local_idx, stmt)| {
-                    let inv = stmt.as_invocation()?;
+            // Build CFG for dominance analysis.
+            let cfg = Cfg::build(&program.statements, start, end);
+
+            // Find blocks containing replace_class invocations.
+            let mut replace_blocks: Vec<(usize, usize)> = Vec::new(); // (block_id, stmt_idx)
+                                                                      // Find blocks containing guard checks (caller + storage derived).
+            let mut guard_blocks: Vec<usize> = Vec::new();
+
+            // Tag propagation per block (simplified: process blocks in topo order).
+            let mut tags: HashMap<u64, u8> = HashMap::new();
+
+            for block_id in cfg.topological_order() {
+                let block = &cfg.blocks[block_id];
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    // Check for replace_class.
                     let is_replace = REPLACE_CLASS_LIBFUNCS
                         .iter()
                         .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
                     if is_replace {
-                        Some(local_idx)
-                    } else {
-                        None
+                        replace_blocks.push((block_id, stmt_idx));
                     }
-                })
-                .collect();
 
-            if replace_sites.is_empty() {
+                    // Tag propagation.
+                    let mut arg_union = 0u8;
+                    let mut has_caller_arg = false;
+                    let mut has_storage_arg = false;
+                    for arg in &inv.args {
+                        let tag = tags.get(arg).copied().unwrap_or(0);
+                        arg_union |= tag;
+                        if tag & TAG_CALLER != 0 {
+                            has_caller_arg = true;
+                        }
+                        if tag & TAG_STORAGE != 0 {
+                            has_storage_arg = true;
+                        }
+                    }
+
+                    let is_check = OWNER_CHECK_LIBFUNCS
+                        .iter()
+                        .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
+                    let is_branch_guard = is_guarding_branch(inv, program, start, end);
+                    let has_mixed_arg =
+                        arg_union & (TAG_CALLER | TAG_STORAGE) == (TAG_CALLER | TAG_STORAGE);
+
+                    if (is_check || is_branch_guard)
+                        && (has_mixed_arg || (has_caller_arg && has_storage_arg))
+                        && !guard_blocks.contains(&block_id)
+                    {
+                        guard_blocks.push(block_id);
+                    }
+
+                    // Inter-procedural: check callees for guards.
+                    let is_function_call = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .map(|name| name == "function_call")
+                        .unwrap_or(false);
+                    let mut call_produced_tag = 0u8;
+                    if is_function_call {
+                        if let Some(callee_idx) =
+                            callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
+                        {
+                            let mut visiting: HashSet<usize> = [func.idx].into_iter().collect();
+                            if function_has_structural_guard(
+                                callee_idx,
+                                program,
+                                &callgraph,
+                                &mut guard_cache,
+                                &mut storage_return_cache,
+                                &mut visiting,
+                            ) {
+                                // Callee has a guard — treat as if this block has a guard.
+                                if !guard_blocks.contains(&block_id) {
+                                    guard_blocks.push(block_id);
+                                }
+                            }
+
+                            let mut visiting_storage: HashSet<usize> =
+                                [func.idx].into_iter().collect();
+                            if function_returns_storage_derived(
+                                callee_idx,
+                                program,
+                                &callgraph,
+                                &mut storage_return_cache,
+                                &mut visiting_storage,
+                            ) {
+                                call_produced_tag |= TAG_STORAGE;
+                            }
+                        }
+                    }
+
+                    let is_storage_read = program.libfunc_registry.is_storage_read(&inv.libfunc_id);
+                    let is_caller_source = program
+                        .libfunc_registry
+                        .matches(&inv.libfunc_id, "get_caller_address")
+                        || program
+                            .libfunc_registry
+                            .matches(&inv.libfunc_id, "get_execution_info");
+
+                    let mut produced_tag = arg_union | call_produced_tag;
+                    if is_storage_read {
+                        produced_tag |= TAG_STORAGE;
+                    }
+                    if is_caller_source {
+                        produced_tag |= TAG_CALLER;
+                    }
+
+                    if produced_tag != 0 {
+                        for branch in &inv.branches {
+                            for r in &branch.results {
+                                let entry = tags.entry(*r).or_insert(0);
+                                *entry |= produced_tag;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if replace_blocks.is_empty() {
                 continue;
             }
 
-            // Check if any storage_read result flows into an owner-check libfunc
-            // before the replace_class call.
-            let has_owner_check = has_storage_backed_check(
-                func.idx,
-                start,
-                end.min(program.statements.len()),
-                stmts,
-                &replace_sites,
-                program,
-                &callgraph,
-                &mut guard_cache,
-                &mut storage_return_cache,
-            );
+            // Compute dominator tree once, then check all pairs.
+            let idom = cfg.dominators();
+            let has_dominating_guard = if guard_blocks.is_empty() {
+                false
+            } else {
+                replace_blocks.iter().all(|&(replace_block, _)| {
+                    guard_blocks
+                        .iter()
+                        .any(|&guard_block| Cfg::dominates_with(&idom, guard_block, replace_block))
+                })
+            };
 
-            if !has_owner_check {
-                for local_idx in replace_sites {
+            if !has_dominating_guard {
+                for &(_, stmt_idx) in &replace_blocks {
                     findings.push(Finding::new(
                         self.id(),
                         self.severity(),
@@ -121,13 +232,12 @@ impl Detector for UnprotectedUpgrade {
                             "Function '{}': replace_class_syscall at stmt {} has no \
                              owner/access-control check. Any caller can replace the \
                              contract implementation.",
-                            func.name,
-                            start + local_idx
+                            func.name, stmt_idx
                         ),
                         Location {
                             file: program.source.display().to_string(),
                             function: func.name.clone(),
-                            statement_idx: Some(start + local_idx),
+                            statement_idx: Some(stmt_idx),
                             line: None,
                             col: None,
                         },
@@ -140,124 +250,8 @@ impl Detector for UnprotectedUpgrade {
     }
 }
 
-/// Returns true if a check/branch before the first `replace_class` consumes
-/// values that are jointly derived from caller identity and storage.
-fn has_storage_backed_check(
-    func_idx: usize,
-    func_start: usize,
-    func_end: usize,
-    stmts: &[Statement],
-    replace_sites: &[usize],
-    program: &ProgramIR,
-    callgraph: &CallGraph,
-    guard_cache: &mut HashMap<usize, bool>,
-    storage_return_cache: &mut HashMap<usize, bool>,
-) -> bool {
-    let first_replace = replace_sites.iter().copied().min().unwrap_or(usize::MAX);
-
-    // Variable provenance tags:
-    // - TAG_CALLER: value derived from caller identity
-    // - TAG_STORAGE: value derived from storage reads
-    let mut tags: HashMap<u64, u8> = HashMap::new();
-
-    for (local_idx, stmt) in stmts.iter().enumerate() {
-        if local_idx >= first_replace {
-            break;
-        }
-        let inv = match stmt.as_invocation() {
-            Some(inv) => inv,
-            None => continue,
-        };
-
-        let mut arg_union = 0u8;
-        let mut has_caller_arg = false;
-        let mut has_storage_arg = false;
-        for arg in &inv.args {
-            let tag = tags.get(arg).copied().unwrap_or(0);
-            arg_union |= tag;
-            if tag & TAG_CALLER != 0 {
-                has_caller_arg = true;
-            }
-            if tag & TAG_STORAGE != 0 {
-                has_storage_arg = true;
-            }
-        }
-
-        let is_check = OWNER_CHECK_LIBFUNCS
-            .iter()
-            .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
-        let is_branch_guard = is_guarding_branch(inv, program, func_start, func_end);
-        let has_mixed_arg = arg_union & (TAG_CALLER | TAG_STORAGE) == (TAG_CALLER | TAG_STORAGE);
-
-        if (is_check || is_branch_guard) && (has_mixed_arg || (has_caller_arg && has_storage_arg)) {
-            return true;
-        }
-
-        let is_function_call = program
-            .libfunc_registry
-            .generic_id(&inv.libfunc_id)
-            .map(|name| name == "function_call")
-            .unwrap_or(false);
-        let mut call_produced_tag = 0u8;
-        if is_function_call {
-            if let Some(callee_idx) =
-                callgraph.callee_of(&inv.libfunc_id, &program.libfunc_registry)
-            {
-                let mut visiting: HashSet<usize> = [func_idx].into_iter().collect();
-                if function_has_structural_guard(
-                    callee_idx,
-                    program,
-                    callgraph,
-                    guard_cache,
-                    storage_return_cache,
-                    &mut visiting,
-                ) {
-                    return true;
-                }
-
-                let mut visiting_storage: HashSet<usize> = [func_idx].into_iter().collect();
-                if function_returns_storage_derived(
-                    callee_idx,
-                    program,
-                    callgraph,
-                    storage_return_cache,
-                    &mut visiting_storage,
-                ) {
-                    call_produced_tag |= TAG_STORAGE;
-                }
-            }
-        }
-
-        let is_storage_read = program.libfunc_registry.is_storage_read(&inv.libfunc_id);
-        let is_caller_source = program
-            .libfunc_registry
-            .matches(&inv.libfunc_id, "get_caller_address")
-            || program
-                .libfunc_registry
-                .matches(&inv.libfunc_id, "get_execution_info");
-
-        let mut produced_tag = arg_union | call_produced_tag;
-        if is_storage_read {
-            produced_tag |= TAG_STORAGE;
-        }
-        if is_caller_source {
-            produced_tag |= TAG_CALLER;
-        }
-
-        if produced_tag == 0 {
-            continue;
-        }
-        for branch in &inv.branches {
-            for r in &branch.results {
-                let entry = tags.entry(*r).or_insert(0);
-                *entry |= produced_tag;
-            }
-        }
-    }
-
-    false
-}
-
+/// Returns true if a check/branch in the function consumes values that are
+/// jointly derived from caller identity and storage.
 fn function_has_structural_guard(
     func_idx: usize,
     program: &ProgramIR,
@@ -382,10 +376,6 @@ fn function_has_structural_guard(
 
 /// Returns true when an invocation's branching shape represents a control
 /// decision (authorization guard), not a generic multi-result operation.
-///
-/// A branch is considered guard-like when either:
-/// - at least one branch target reaches a non-returning path (panic/revert), or
-/// - one branch is Fallthrough and another is an explicit jump target.
 fn is_guarding_branch(
     inv: &Invocation,
     program: &ProgramIR,
@@ -426,7 +416,6 @@ fn branch_target_is_non_returning(
         return false;
     }
 
-    // Inspect a short forward window. Panic/revert paths are usually immediate.
     let scan_end = target_idx.saturating_add(4).min(func_end);
     for idx in target_idx..scan_end {
         match &program.statements[idx] {
@@ -435,7 +424,7 @@ fn branch_target_is_non_returning(
                 let name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
                 if name.contains("panic") || name.contains("revert") || name.contains("abort") {
                     return true;

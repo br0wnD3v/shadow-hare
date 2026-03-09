@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use cairo_annotations::annotations::coverage::VersionedCoverageAnnotations;
 use cairo_annotations::annotations::TryFromDebugInfo;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
 use crate::error::{AnalyzerError, AnalyzerWarning};
 use crate::loader::version::{
@@ -41,7 +42,7 @@ pub enum ArtifactFormat {
 // ── Raw Sierra Program (cairo-lang-sierra JSON format) ─────────────────────
 
 /// Mirrors `cairo_lang_sierra::program::Program` serde output.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct RawSierraProgram {
     #[serde(default)]
     pub type_declarations: Vec<RawTypeDeclaration>,
@@ -410,6 +411,8 @@ pub fn load_artifact(
         ArtifactFormat::RawSierraJson
     };
 
+    debug!(path = %path.display(), format = ?format, "Loading Sierra artifact");
+
     match format {
         ArtifactFormat::RawSierraJson => load_raw_sierra(path, &value, matrix),
         ArtifactFormat::StarknetContractClass => load_contract_class(path, &value, matrix),
@@ -449,6 +452,17 @@ fn load_raw_sierra(
         .iter()
         .find(|w| w.kind == crate::error::WarningKind::IncompatibleVersion)
         .map(|w| w.message.clone());
+
+    debug!(
+        sierra_version = ?artifact_version.sierra_version,
+        compiler_version = ?artifact_version.compiler_version,
+        tier = %compat,
+        "Loaded raw Sierra JSON"
+    );
+    if let Some(ref reason) = compatibility_degraded_reason {
+        warn!(reason = %reason, "Compatibility degraded");
+    }
+
     let program = normalise_raw_program(raw, &mut warnings);
 
     Ok(LoadedArtifact {
@@ -488,6 +502,16 @@ fn load_contract_class(
         .iter()
         .find(|w| w.kind == crate::error::WarningKind::IncompatibleVersion)
         .map(|w| w.message.clone());
+
+    debug!(
+        contract_class_version = ?artifact_version.contract_class_version,
+        compiler_version = ?artifact_version.compiler_version,
+        tier = %compat,
+        "Loaded Starknet contract class"
+    );
+    if let Some(ref reason) = compatibility_degraded_reason {
+        warn!(reason = %reason, "Compatibility degraded");
+    }
 
     // Decode the encoded Sierra program from the contract class.
     let (program, statement_locations) = decode_contract_class_program(&raw, path, &mut warnings)?;
@@ -659,8 +683,7 @@ fn extract_functions_from_debug_info(raw: &RawContractClass) -> Vec<Function> {
     debug
         .user_func_names
         .iter()
-        .enumerate()
-        .map(|(_idx, (id, name))| Function {
+        .map(|(id, name)| Function {
             id: SierraId {
                 id: Some(*id),
                 debug_name: Some(name.clone()),
@@ -905,17 +928,6 @@ fn convert_cairo_program(
         libfunc_declarations,
         statements,
         functions,
-    }
-}
-
-impl Default for RawSierraProgram {
-    fn default() -> Self {
-        Self {
-            type_declarations: Vec::new(),
-            libfunc_declarations: Vec::new(),
-            statements: Vec::new(),
-            funcs: Vec::new(),
-        }
     }
 }
 

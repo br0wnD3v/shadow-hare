@@ -9,8 +9,12 @@ pub mod loader;
 pub mod output;
 pub mod printers;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use indicatif::{ProgressBar, ProgressStyle};
+use tracing::{debug, info, info_span};
 
 use crate::baseline::Baseline;
 use crate::config::{AnalyzerConfig, Suppression};
@@ -73,6 +77,9 @@ pub fn analyse_paths(
     config: &AnalyzerConfig,
     registry: &DetectorRegistry,
 ) -> Result<AnalysisResult, AnalyzerError> {
+    let _span = info_span!("analyse_paths", n_artifacts = paths.len()).entered();
+    debug!(n_artifacts = paths.len(), "Starting analysis");
+
     let matrix = CompatibilityMatrix::default();
 
     let mut all_findings: Vec<Finding> = Vec::new();
@@ -80,8 +87,37 @@ pub fn analyse_paths(
     let mut sources: Vec<String> = Vec::new();
     let mut compatibility: Vec<SourceCompatibility> = Vec::new();
 
+    // Progress bar: auto-hidden when stderr is not a terminal (piped / CI).
+    let pb = if paths.len() > 1 && std::io::stderr().is_terminal() {
+        let bar = ProgressBar::new(paths.len() as u64);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.cyan} [{elapsed_precise}] [{bar:30.cyan/dim}] {pos}/{len} {msg}",
+            )
+            .unwrap()
+            .progress_chars("━╸─"),
+        );
+        Some(bar)
+    } else {
+        None
+    };
+
     for path in paths {
+        if let Some(ref pb) = pb {
+            pb.set_message(
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
         let artifact = sierra_loader::load_artifact(path, &matrix)?;
+        debug!(
+            path = %path.display(),
+            tier = %artifact.compatibility,
+            format = ?artifact.format,
+            "Artifact loaded"
+        );
 
         sources.push(path.display().to_string());
         compatibility.push(SourceCompatibility {
@@ -106,6 +142,7 @@ pub fn analyse_paths(
         }
 
         let (mut findings, warnings) = registry.run_all(&program, config);
+        debug!(findings = findings.len(), path = %path.display(), "Detectors finished for artifact");
         enrich_findings_with_source_locations(&mut findings, &program);
         all_findings.extend(findings);
         all_warnings.extend(warnings);
@@ -114,7 +151,21 @@ pub fn analyse_paths(
         enrich_findings_with_source_locations(&mut plugin_findings, &program);
         all_findings.extend(plugin_findings);
         all_warnings.extend(plugin_warnings);
+
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
     }
+
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
+    }
+
+    info!(
+        total_findings = all_findings.len(),
+        artifacts = paths.len(),
+        "Analysis complete"
+    );
 
     if config.strict {
         let strict_issues: Vec<String> = all_warnings

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
+use tracing::debug;
 
 use crate::config::AnalyzerConfig;
 use crate::detectors::{DetectorRegistry, Finding, Severity};
@@ -77,6 +78,13 @@ pub fn analyse_diff_paths(
         .intersection(&right_keys)
         .cloned()
         .collect::<Vec<_>>();
+
+    debug!(
+        new = new_findings.len(),
+        resolved = resolved_findings.len(),
+        unchanged = unchanged_fingerprints.len(),
+        "Diff computed"
+    );
 
     Ok(DiffResult {
         left,

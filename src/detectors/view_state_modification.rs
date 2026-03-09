@@ -34,7 +34,7 @@ impl Detector for ViewStateModification {
     fn requirements(&self) -> DetectorRequirements {
         DetectorRequirements {
             min_tier: CompatibilityTier::Tier3,
-            requires_debug_info: true,
+            requires_debug_info: false,
             source_aware: false,
         }
     }
@@ -100,7 +100,32 @@ fn is_view_like_entrypoint(kind: FunctionKind, is_external: bool, name: &str) ->
     if kind == FunctionKind::View {
         return true;
     }
-    is_external && (name.contains("::__view") || name.ends_with("_view"))
+    if !is_external {
+        return false;
+    }
+    // Explicit view markers
+    name.contains("::__view") || name.ends_with("_view")
+        // Check the function's leaf name for getter patterns.
+        // This avoids false positives like "increase_allowance" matching "allowance".
+        || is_view_leaf_name(name)
+}
+
+fn is_view_leaf_name(name: &str) -> bool {
+    let leaf = name.rsplit("::").next().unwrap_or(name).to_ascii_lowercase();
+    // Strip __wrapper__ prefix if present
+    let leaf = leaf.strip_prefix("__wrapper__").unwrap_or(&leaf);
+    matches!(
+        leaf,
+        "name" | "symbol" | "decimals"
+            | "balance_of" | "balanceof"
+            | "total_supply" | "totalsupply"
+            | "allowance"
+            | "owner_of" | "ownerof"
+            | "token_uri" | "tokenuri"
+            | "is_approved_for_all" | "isapprovedforall"
+            | "get_approved" | "getapproved"
+            | "supports_interface" | "supportsinterface"
+    ) || leaf.starts_with("get_")
 }
 
 fn find_storage_write_site(

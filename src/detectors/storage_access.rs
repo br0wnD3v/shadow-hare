@@ -81,7 +81,7 @@ impl<'a> ForwardAnalysis for StorageKeyTaintAnalysis<'a> {
             .program
             .libfunc_registry
             .generic_id(&inv.libfunc_id)
-            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+            .or(inv.libfunc_id.debug_name.as_deref())
             .unwrap_or("");
 
         // Sanitizers break the taint chain — results are no longer tainted.

@@ -1,43 +1,15 @@
 use std::collections::HashSet;
 
+use crate::analysis::sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Detects L1 handler functions where the message payload controls the
 /// function selector passed to `call_contract_syscall` (selector injection).
-///
-/// This is a critical vulnerability: an L1 message effectively tells the L2
-/// contract "call function X on contract Y with these args". If the selector
-/// comes from the L1 payload and is not validated against a whitelist, an
-/// attacker who controls the L1 side (or can send forged L1 messages if
-/// `from_address` is also unchecked) can:
-///
-/// - Call `transfer(attacker_addr, max_amount)` on the token contract
-/// - Trigger `self_destruct()` or `set_owner(attacker)` on any target
-/// - Bypass role checks by routing to an unguarded internal path
-///
-/// Vulnerable pattern:
-///   @l1_handler fn relay(from_address, target, selector, calldata) {
-///     call_contract(target, selector, calldata);   // selector from L1!
-///   }
-///
-/// Safe pattern: maintain a whitelist of allowed selectors in storage and
-/// assert `selector == ALLOWED_SELECTORS[i]` before delegating.
 pub struct L1HandlerUncheckedSelector;
-
-/// Pass-through libfuncs that preserve taint.
-const PASS_THROUGH: &[&str] = &["store_temp", "rename", "dup", "snapshot_take"];
-
-/// Libfuncs that produce clean (non-payload) values.
-const CLEAN_SOURCES: &[&str] = &[
-    "felt252_const",
-    "contract_address_const",
-    "class_hash_const",
-    "storage_read_syscall",
-    "storage_base_address_const",
-];
 
 impl Detector for L1HandlerUncheckedSelector {
     fn id(&self) -> &'static str {
@@ -69,65 +41,55 @@ impl Detector for L1HandlerUncheckedSelector {
     fn run(&self, program: &ProgramIR) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
         let mut findings = Vec::new();
         let warnings = Vec::new();
+        let all_sanitizers = sanitizers::all_general_sanitizers();
 
         for func in program.l1_handler_functions() {
-            // Need at least 3 params (System + from_address + at least one payload param)
             if func.raw.params.len() < 3 {
                 continue;
             }
-
-            // Taint seed: payload params (params[2+]).
-            // System (param[0]) and from_address (param[1]) are not treated as
-            // attacker-controlled for the selector, though a missing from_address
-            // check is a separate issue (unchecked_l1_handler).
-            let mut tainted: HashSet<u64> =
-                func.raw.params.iter().skip(2).map(|(id, _)| *id).collect();
 
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            for (local_idx, stmt) in stmts.iter().enumerate() {
-                let inv = match stmt.as_invocation() {
-                    Some(inv) => inv,
-                    None => continue,
-                };
+            // Taint seed: payload params (params[2+]).
+            let seeds: HashSet<u64> = func.raw.params.iter().skip(2).map(|(id, _)| *id).collect();
 
-                let libfunc_name = program
-                    .libfunc_registry
-                    .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
-                    .unwrap_or("");
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                seeds,
+                &all_sanitizers,
+                &["function_call"],
+            );
 
-                // Clean sources — results not tainted
-                if CLEAN_SOURCES.iter().any(|p| libfunc_name.contains(p)) {
-                    continue;
-                }
+            for block_id in cfg.topological_order() {
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
 
-                // Pass-through: propagate taint
-                if PASS_THROUGH.iter().any(|p| libfunc_name.contains(p)) {
-                    if inv.args.iter().any(|a| tainted.contains(a)) {
-                        for branch in &inv.branches {
-                            for r in &branch.results {
-                                tainted.insert(*r);
-                            }
-                        }
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    let libfunc_name = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .or(inv.libfunc_id.debug_name.as_deref())
+                        .unwrap_or("");
+
+                    if !libfunc_name.contains("call_contract") {
+                        continue;
                     }
-                    continue;
-                }
 
-                // Sink: call_contract_syscall
-                // arg layout: [system, contract_address, selector, calldata...]
-                // arg[2] = entry_point_selector
-                let is_call_contract = libfunc_name.contains("call_contract");
-                if is_call_contract {
+                    // arg[2] = entry_point_selector.
                     let selector_is_tainted = inv
                         .args
                         .get(2)
-                        .map(|v| tainted.contains(v))
-                        .unwrap_or(false);
+                        .is_some_and(|v| tainted.is_some_and(|t| t.contains(v)));
 
                     if selector_is_tainted {
                         findings.push(Finding::new(
@@ -140,27 +102,16 @@ impl Detector for L1HandlerUncheckedSelector {
                                  to call_contract_syscall derives from an L1 message \
                                  payload parameter. An attacker can invoke arbitrary \
                                  functions on the target contract.",
-                                func.name,
-                                start + local_idx
+                                func.name, stmt_idx
                             ),
                             Location {
                                 file: program.source.display().to_string(),
                                 function: func.name.clone(),
-                                statement_idx: Some(start + local_idx),
+                                statement_idx: Some(stmt_idx),
                                 line: None,
                                 col: None,
                             },
                         ));
-                    }
-                    continue;
-                }
-
-                // Other ops: propagate taint
-                if inv.args.iter().any(|a| tainted.contains(a)) {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            tainted.insert(*r);
-                        }
                     }
                 }
             }

@@ -46,11 +46,11 @@ impl Detector for UncheckedIntegerOverflow {
     }
 
     fn severity(&self) -> Severity {
-        Severity::High
+        Severity::Medium
     }
 
     fn confidence(&self) -> Confidence {
-        Confidence::High
+        Confidence::Low
     }
 
     fn description(&self) -> &'static str {
@@ -86,7 +86,7 @@ impl Detector for UncheckedIntegerOverflow {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 let is_overflow_op = OVERFLOW_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));

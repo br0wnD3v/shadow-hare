@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
@@ -16,10 +17,13 @@ pub mod costly_loop;
 pub mod deploy_tainted_class_hash;
 pub mod erc20_interface;
 pub mod erc721_interface;
+pub mod event_before_state;
 pub mod events;
 pub mod events_access_control;
 pub mod events_arithmetic;
 pub mod felt252_overflow;
+pub mod function_complexity;
+pub mod gas_griefing;
 pub mod hardcoded;
 pub mod initializer_replay;
 pub mod integer_overflow;
@@ -32,9 +36,12 @@ pub mod l2l1_amount;
 pub mod l2l1_dest;
 pub mod l2l1_double;
 pub mod library_call;
+pub mod magic_numbers;
+pub mod missing_pausable;
 pub mod multi_call;
 pub mod nonce;
 pub mod oracle;
+pub mod pragma;
 pub mod precision;
 pub mod pyth;
 pub mod reentrancy;
@@ -52,9 +59,11 @@ pub mod token_transfer;
 pub mod truncation;
 pub mod tx_origin;
 pub mod u256_underflow;
+pub mod unchecked_ecrecover;
 pub mod unchecked_transfer;
 pub mod unchecked_write;
 pub mod unindexed_event;
+pub mod uninitialized_storage;
 pub mod unused;
 pub mod unused_state;
 pub mod upgrade;
@@ -240,6 +249,7 @@ impl DetectorRegistry {
                 Box::new(token_transfer::ArbitraryTokenTransfer),
                 Box::new(unchecked_write::WriteWithoutCallerCheck),
                 Box::new(unchecked_transfer::UncheckedTransfer),
+                Box::new(unchecked_ecrecover::UncheckedEcrecover),
                 Box::new(rtlo::Rtlo),
                 // L1<->L2 messaging — High
                 Box::new(l2l1_dest::L2ToL1TaintedDestination),
@@ -257,6 +267,12 @@ impl DetectorRegistry {
                 Box::new(pyth::PythUncheckedConfidence),
                 Box::new(pyth::PythUncheckedPublishtime),
                 Box::new(pyth::PythDeprecatedFunction),
+                Box::new(pragma::PragmaUncheckedFreshness),
+                Box::new(pragma::PragmaMissingAggregation),
+                Box::new(pragma::PragmaUncheckedNumSources),
+                Box::new(missing_pausable::MissingPausable),
+                Box::new(gas_griefing::GasGriefing),
+                Box::new(uninitialized_storage::UninitializedStorageRead),
                 Box::new(tautology::TautologicalCompare),
                 Box::new(tautology_condition::TautologyCondition),
                 Box::new(multi_call::MultipleExternalCalls),
@@ -267,6 +283,7 @@ impl DetectorRegistry {
                 // L1<->L2 messaging — Medium
                 Box::new(l2l1_double::L2ToL1DoubleSend),
                 // Low severity
+                Box::new(event_before_state::EventBeforeStateChange),
                 Box::new(calls_loop::CallsLoop),
                 Box::new(write_after_write::WriteAfterWrite),
                 Box::new(reentrancy_events::ReentrancyEvents),
@@ -285,6 +302,8 @@ impl DetectorRegistry {
                 Box::new(unindexed_event::UnindexedEvent),
                 Box::new(unused_state::UnusedState),
                 Box::new(unused::DeadCode),
+                Box::new(magic_numbers::MagicNumbers),
+                Box::new(function_complexity::ExcessiveFunctionComplexity),
             ],
         }
     }
@@ -295,6 +314,14 @@ impl DetectorRegistry {
         config: &crate::config::AnalyzerConfig,
     ) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
         use rayon::prelude::*;
+
+        let enabled_count = self
+            .detectors
+            .iter()
+            .filter(|d| config.detectors.should_run(d.id()))
+            .count();
+        debug!(detectors = enabled_count, source = %program.source.display(), "Running detectors");
+        let t0 = std::time::Instant::now();
 
         let results: Vec<(Vec<Finding>, Vec<AnalyzerWarning>)> = self
             .detectors
@@ -351,6 +378,12 @@ impl DetectorRegistry {
             all_findings.extend(findings);
             all_warnings.extend(warnings);
         }
+
+        info!(
+            findings = all_findings.len(),
+            elapsed_ms = t0.elapsed().as_millis() as u64,
+            "Detector run complete"
+        );
 
         // Sort deterministically: severity desc, then detector_id, then fingerprint
         all_findings.sort_by(|a, b| {

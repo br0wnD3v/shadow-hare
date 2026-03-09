@@ -68,7 +68,7 @@ impl Detector for U256Underflow {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 // Detect subtraction libfuncs that produce overflow flags

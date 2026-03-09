@@ -1,7 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::analysis::dataflow::ForwardAnalysis;
+use tracing::debug;
+
+use crate::analysis::cfg::{BlockIdx, Cfg};
+use crate::analysis::dataflow::{self, ForwardAnalysis};
 use crate::ir::type_registry::LibfuncRegistry;
+use crate::ir::ProgramIR;
 use crate::loader::Statement;
 
 /// Taint domain: a set of variable IDs that are tainted.
@@ -49,7 +53,7 @@ impl<'a> ForwardAnalysis for TaintAnalysis<'a> {
                 let name = self
                     .libfuncs
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 // Skip libfuncs: no taint change at all
@@ -84,6 +88,48 @@ impl<'a> ForwardAnalysis for TaintAnalysis<'a> {
     }
 }
 
+/// One-shot convenience wrapper: build a CFG for the given function,
+/// run taint analysis over it, and return both the CFG and per-block
+/// exit taint states.
+///
+/// This makes converting a linear-scan detector to CFG-aware analysis
+/// a ~5-line change:
+///
+/// ```ignore
+/// let (cfg, block_taint) = run_taint_analysis(
+///     program, func_idx, seeds, &sanitizers, &["function_call"],
+/// );
+/// // For each block, `block_taint[&block_id]` contains the tainted
+/// // variable set at the block exit.
+/// ```
+pub fn run_taint_analysis(
+    program: &ProgramIR,
+    func_idx: usize,
+    seeds: HashSet<u64>,
+    sanitizers: &[&str],
+    skip: &[&str],
+) -> (Cfg, HashMap<BlockIdx, TaintSet>) {
+    let (start, end) = program.function_statement_range(func_idx);
+    let cfg = Cfg::build(&program.statements, start, end);
+
+    debug!(
+        seeds = seeds.len(),
+        sanitizers = sanitizers.len(),
+        func_idx,
+        "Running taint analysis"
+    );
+
+    let analysis = TaintAnalysis {
+        libfuncs: &program.libfunc_registry,
+        seeds,
+        sanitizers,
+        skip_libfuncs: skip,
+    };
+
+    let block_taint = dataflow::run_forward(&analysis, &cfg, &program.statements);
+    (cfg, block_taint)
+}
+
 /// Check whether a variable is ever used as an argument to a matching libfunc.
 /// Returns the statement index where the tainted value reaches the sink.
 pub fn taint_reaches_sink(
@@ -95,10 +141,10 @@ pub fn taint_reaches_sink(
     let mut sink_sites = Vec::new();
     for (idx, stmt) in stmts.iter().enumerate() {
         if let Statement::Invocation(inv) = stmt {
-            if libfuncs.matches(&inv.libfunc_id, libfunc_pattern) {
-                if inv.args.iter().any(|a| tainted_vars.contains(a)) {
-                    sink_sites.push(idx);
-                }
+            if libfuncs.matches(&inv.libfunc_id, libfunc_pattern)
+                && inv.args.iter().any(|a| tainted_vars.contains(a))
+            {
+                sink_sites.push(idx);
             }
         }
     }

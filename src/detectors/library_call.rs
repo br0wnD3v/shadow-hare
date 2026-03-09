@@ -1,7 +1,11 @@
+use std::collections::HashSet;
+
+use crate::analysis::sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Detects library calls where the class hash is controlled by user input.
 ///
@@ -41,32 +45,67 @@ impl Detector for ControlledLibraryCall {
     fn run(&self, program: &ProgramIR) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
         let mut findings = Vec::new();
         let warnings = Vec::new();
+        let hash_sanitizers = sanitizers::hash_only_sanitizers();
 
         for func in program.external_functions() {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            // Taint: parameters are user-controlled
-            let mut tainted: std::collections::HashSet<u64> =
-                func.raw.params.iter().map(|(id, _)| *id).collect();
+            // Seed taint from non-System function params.
+            let seeds: HashSet<u64> = func
+                .raw
+                .params
+                .iter()
+                .filter_map(|(id, ty)| {
+                    let ty_name = ty.debug_name.as_deref().unwrap_or("");
+                    if ty_name == "System" {
+                        None
+                    } else {
+                        Some(*id)
+                    }
+                })
+                .collect();
 
-            for (local_idx, stmt) in stmts.iter().enumerate() {
-                let inv = match stmt.as_invocation() {
-                    Some(inv) => inv,
-                    None => continue,
-                };
+            if seeds.is_empty() {
+                continue;
+            }
 
-                let is_library_call = LIBRARY_CALL_LIBFUNCS
-                    .iter()
-                    .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                seeds,
+                &hash_sanitizers,
+                &["function_call"],
+            );
 
-                if is_library_call {
-                    // The first meaningful arg to library_call is the class hash.
-                    // If it's tainted, flag it.
-                    if inv.args.iter().any(|a| tainted.contains(a)) {
+            for block_id in cfg.topological_order() {
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    let is_library_call = LIBRARY_CALL_LIBFUNCS
+                        .iter()
+                        .any(|p| program.libfunc_registry.matches(&inv.libfunc_id, p));
+
+                    if !is_library_call {
+                        continue;
+                    }
+
+                    // Check if any arg (particularly the class hash) is tainted
+                    let class_hash_tainted = inv
+                        .args
+                        .iter()
+                        .any(|a| tainted.is_some_and(|t| t.contains(a)));
+
+                    if class_hash_tainted {
                         findings.push(Finding::new(
                             self.id(),
                             self.severity(),
@@ -76,26 +115,17 @@ impl Detector for ControlledLibraryCall {
                                 "Function '{}': library_call at stmt {} uses a class hash \
                                  derived from user-controlled input. An attacker can \
                                  pass a malicious class hash to execute arbitrary code.",
-                                func.name,
-                                start + local_idx
+                                func.name, stmt_idx
                             ),
                             Location {
                                 file: program.source.display().to_string(),
                                 function: func.name.clone(),
-                                statement_idx: Some(start + local_idx),
+                                statement_idx: Some(stmt_idx),
                                 line: None,
                                 col: None,
                             },
                         ));
-                    }
-                }
-
-                // Propagate taint through all invocations
-                if inv.args.iter().any(|a| tainted.contains(a)) {
-                    for branch in &inv.branches {
-                        for result in &branch.results {
-                            tainted.insert(*result);
-                        }
+                        break; // One finding per function is enough.
                     }
                 }
             }

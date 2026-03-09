@@ -51,8 +51,10 @@ fn requires_debug_info_detectors_are_skipped_without_debug_info() {
 fn strict_mode_fails_on_missing_debug_info_requirements() {
     let tmp = write_empty_raw_sierra();
     let registry = DetectorRegistry::all();
-    let mut config = AnalyzerConfig::default();
-    config.strict = true;
+    let config = AnalyzerConfig {
+        strict: true,
+        ..AnalyzerConfig::default()
+    };
 
     let paths = vec![PathBuf::from(tmp.path())];
     let err = analyse_paths(&paths, &config, &registry).expect_err("strict mode should fail");

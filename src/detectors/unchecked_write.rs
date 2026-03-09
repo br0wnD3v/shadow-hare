@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
-use crate::analysis::cfg::{BlockIdx, Cfg};
-use crate::analysis::dataflow::{run_forward, ForwardAnalysis};
+use crate::analysis::callgraph::{CallGraph, FunctionSummaries};
+use crate::analysis::cfg::Cfg;
+use crate::analysis::dataflow::{self, run_forward, ForwardAnalysis};
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
@@ -26,6 +25,21 @@ const CALLER_CHECK_LIBFUNCS: &[&str] = &[
     "get_contract_address",
 ];
 
+/// Patterns in function_call debug names that indicate an access-control
+/// assertion is performed inside the callee. These internally invoke
+/// get_caller_address and compare/assert against stored values.
+const ACCESS_CONTROL_CALL_PATTERNS: &[&str] = &[
+    "assert_only_owner",
+    "assert_only_role",
+    "_check_role",
+    "only_owner",
+    "assert_owner",
+    "assert_caller",
+    "OwnableImpl",
+    "AccessControlImpl",
+    "assert_not_paused",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 struct WriteGuardState {
     has_caller_check: bool,
@@ -34,6 +48,8 @@ struct WriteGuardState {
 
 struct WriteGuardAnalysis<'a> {
     program: &'a ProgramIR,
+    callgraph: &'a CallGraph,
+    summaries: &'a FunctionSummaries,
 }
 
 impl<'a> ForwardAnalysis for WriteGuardAnalysis<'a> {
@@ -53,7 +69,7 @@ impl<'a> ForwardAnalysis for WriteGuardAnalysis<'a> {
             .program
             .libfunc_registry
             .generic_id(&inv.libfunc_id)
-            .or_else(|| inv.libfunc_id.debug_name.as_deref())
+            .or(inv.libfunc_id.debug_name.as_deref())
             .unwrap_or("");
 
         let mut next = *state;
@@ -62,6 +78,26 @@ impl<'a> ForwardAnalysis for WriteGuardAnalysis<'a> {
             .any(|p| libfunc_name.contains(p))
         {
             next.has_caller_check = true;
+        }
+        // Inter-procedural: function_call to OZ access-control helpers
+        // (assert_only_owner, assert_only_role, etc.) implies a caller check.
+        if libfunc_name == "function_call" {
+            if let Some(debug) = inv.libfunc_id.debug_name.as_deref() {
+                if ACCESS_CONTROL_CALL_PATTERNS
+                    .iter()
+                    .any(|p| debug.contains(p))
+                {
+                    next.has_caller_check = true;
+                }
+            }
+            // Also check callee's computed summary for caller checks
+            if let Some(callee_idx) = self.callgraph.callee_of(&inv.libfunc_id, &self.program.libfunc_registry) {
+                if callee_idx < self.summaries.has_caller_check.len()
+                    && self.summaries.has_caller_check[callee_idx]
+                {
+                    next.has_caller_check = true;
+                }
+            }
         }
         if self
             .program
@@ -113,6 +149,9 @@ impl Detector for WriteWithoutCallerCheck {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
+        let callgraph = CallGraph::build(program);
+        let summaries = FunctionSummaries::compute(program, &callgraph);
+
         for func in program.external_functions() {
             // Skip constructors — they legitimately write without a caller check
             if func.name.contains("constructor") || func.name.contains("__constructor") {
@@ -125,14 +164,14 @@ impl Detector for WriteWithoutCallerCheck {
             }
             let end = end.min(program.statements.len());
 
-            let analysis = WriteGuardAnalysis { program };
+            let analysis = WriteGuardAnalysis { program, callgraph: &callgraph, summaries: &summaries };
             let cfg = Cfg::build(&program.statements, start, end);
             let block_out = run_forward(&analysis, &cfg, &program.statements);
 
             let mut first_unchecked_write_site: Option<usize> = None;
             for block_id in cfg.topological_order() {
                 let block = &cfg.blocks[block_id];
-                let mut state = block_entry_state(&analysis, &cfg, block_id, &block_out);
+                let mut state = dataflow::block_entry_state(&analysis, &cfg, block_id, &block_out);
 
                 for &stmt_idx in &block.stmts {
                     let stmt = &program.statements[stmt_idx];
@@ -176,37 +215,4 @@ impl Detector for WriteWithoutCallerCheck {
 
         (findings, warnings)
     }
-}
-
-fn block_entry_state<A: ForwardAnalysis>(
-    analysis: &A,
-    cfg: &Cfg,
-    block_id: BlockIdx,
-    block_out: &HashMap<BlockIdx, A::Domain>,
-) -> A::Domain {
-    if block_id == cfg.entry {
-        return analysis.bottom();
-    }
-
-    let Some(preds) = cfg.predecessors.get(&block_id) else {
-        return analysis.bottom();
-    };
-    if preds.is_empty() {
-        return analysis.bottom();
-    }
-
-    let mut it = preds.iter();
-    let first = it.next().expect("preds is non-empty");
-    let mut acc = block_out
-        .get(first)
-        .cloned()
-        .unwrap_or_else(|| analysis.bottom());
-    for pred in it {
-        let pred_out = block_out
-            .get(pred)
-            .cloned()
-            .unwrap_or_else(|| analysis.bottom());
-        acc = analysis.join(&acc, &pred_out);
-    }
-    acc
 }

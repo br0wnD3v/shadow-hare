@@ -79,6 +79,13 @@ impl TypeRegistry {
             .map(|n| n.contains("u256"))
             .unwrap_or(false)
     }
+
+    /// Iterate over all type debug names.
+    pub fn all_debug_names(&self) -> impl Iterator<Item = &str> {
+        self.declarations
+            .iter()
+            .filter_map(|d| d.id.debug_name.as_deref())
+    }
 }
 
 /// Non-panicking libfunc registry.
@@ -130,6 +137,23 @@ impl LibfuncRegistry {
         self.lookup(id).map(|d| d.generic_id.as_str())
     }
 
+    /// Return the most informative name for a libfunc invocation.
+    ///
+    /// Resolution order:
+    ///   1. Generic ID from declaration registry (e.g., "felt252_add", "function_call")
+    ///   2. Debug name from the invocation's SierraId (e.g.,
+    ///      "function_call<user@module::ERC20::transfer_from>")
+    ///   3. Empty string if neither is available.
+    ///
+    /// For detecting specific Sierra libfuncs (storage_read, felt252_add, etc.),
+    /// use `generic_id()` or `matches()`. For detecting the callee of a
+    /// `function_call`, use debug_name directly.
+    pub fn resolve_name<'a>(&'a self, id: &'a SierraId) -> &'a str {
+        self.generic_id(id)
+            .or(id.debug_name.as_deref())
+            .unwrap_or("")
+    }
+
     /// Check whether a libfunc ID matches a known pattern by generic name.
     pub fn matches(&self, id: &SierraId, pattern: &str) -> bool {
         // First try the debug_name on the ID itself
@@ -164,6 +188,13 @@ impl LibfuncRegistry {
     /// Returns true if the libfunc is a cross-contract call.
     pub fn is_external_call(&self, id: &SierraId) -> bool {
         self.matches(id, "call_contract") || self.matches(id, "library_call")
+    }
+
+    /// Iterate over all libfunc debug names.
+    pub fn all_debug_names(&self) -> impl Iterator<Item = &str> {
+        self.declarations
+            .iter()
+            .filter_map(|d| d.id.debug_name.as_deref())
     }
 }
 

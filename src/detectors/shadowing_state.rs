@@ -56,13 +56,34 @@ impl Detector for ShadowingState {
             return (findings, warnings);
         }
 
-        for func in program.all_functions() {
+        // Well-known leaf names used by both events and functions as standard.
+        // These are not shadowing — they are intentional naming conventions.
+        let standard_names: HashSet<&str> = [
+            "transfer",
+            "transfer_from",
+            "approve",
+            "approval",
+            "mint",
+            "burn",
+            "pause",
+            "unpause",
+            "upgrade",
+            "initialize",
+            "constructor",
+        ]
+        .into_iter()
+        .collect();
+
+        for func in program.external_functions() {
             let leaf = func
                 .name
                 .rsplit("::")
                 .next()
                 .unwrap_or(func.name.as_str())
                 .to_ascii_lowercase();
+            if standard_names.contains(leaf.as_str()) {
+                continue;
+            }
             if type_leafs.contains(&leaf) {
                 findings.push(Finding::new(
                     self.id(),

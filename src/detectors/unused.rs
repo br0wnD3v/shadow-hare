@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::analysis::callgraph::CallGraph;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
@@ -73,7 +74,7 @@ impl Detector for UnusedReturn {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if should_skip_libfunc(libfunc_name) {
@@ -131,12 +132,24 @@ fn should_skip_libfunc(name: &str) -> bool {
             | "redeposit_gas"
             | "get_builtin_costs"
             | "revoke_ap_tracking"
+            | "disable_ap_tracking"
+            | "enable_ap_tracking"
+            | "withdraw_gas"
+            | "withdraw_gas_all"
     ) || name.starts_with("store_local")
         || name.starts_with("felt252_dict")
         || name.starts_with("store_temp")
         || name.contains("emit_event")
         || name.contains("send_message_to_l1")
         || name.contains("snapshot_take")
+        || name.contains("storage_write")
+        || name.contains("array_append")
+        || name.contains("struct_construct")
+        || name.contains("struct_deconstruct")
+        || name.contains("enum_init")
+        || name.contains("_into_box")
+        || name.contains("_unbox")
+        || name.contains("_dup")
 }
 
 // ── Dead code detector ───────────────────────────────────────────────────────
@@ -173,51 +186,36 @@ impl Detector for DeadCode {
         let mut findings = Vec::new();
         let warnings = Vec::new();
 
-        // Build the call graph: which functions are referenced in invocations?
-        let mut called_functions: HashSet<String> = HashSet::new();
+        // Use the CallGraph for reliable function reference detection.
+        // It resolves function_call targets via numeric IDs and debug names.
+        let cg = CallGraph::build(program);
 
-        for stmt in &program.statements {
-            if let Statement::Invocation(inv) = stmt {
-                // function_call libfuncs reference another function by ID/name
-                if let Some(name) = &inv.libfunc_id.debug_name {
-                    if name.contains("function_call") || name.starts_with("call") {
-                        // The function being called is typically encoded in generic args
-                        // For now, mark the libfunc itself as "called" so we don't
-                        // produce FP on internal Sierra builtins.
-                        called_functions.insert(name.clone());
-                    }
-                }
+        // Collect all function indices that are called by any function.
+        let mut called: HashSet<usize> = HashSet::new();
+        for callees in cg.edges.values() {
+            for &callee in callees {
+                called.insert(callee);
             }
         }
 
         for func in program.all_functions() {
-            // Skip entry points — they're called externally
+            // Skip entry points — they're called externally.
             if func.is_entrypoint() {
                 continue;
             }
 
-            // Skip well-known generated functions
-            let name = &func.name;
-            if is_generated_function(name) {
+            // Skip well-known generated/framework functions.
+            if is_generated_function(&func.name) {
                 continue;
             }
 
-            // If no other code references this function name, it's dead
-            // This is a best-effort heuristic — Sierra function calls go through
-            // the function_call libfunc with the function id in generic args.
-            let is_referenced = program.statements.iter().any(|s| {
-                if let Statement::Invocation(inv) = s {
-                    inv.libfunc_id
-                        .debug_name
-                        .as_deref()
-                        .map(|n| n.contains(name.as_str()))
-                        .unwrap_or(false)
-                } else {
-                    false
-                }
-            });
+            // If this function is referenced in the call graph, it's live.
+            if called.contains(&func.idx) {
+                continue;
+            }
 
-            if !is_referenced && !name.is_empty() && program.has_debug_info {
+            // Only report when debug info is available (otherwise names are meaningless).
+            if !func.name.is_empty() && program.has_debug_info {
                 findings.push(Finding::new(
                     self.id(),
                     self.severity(),
@@ -225,11 +223,11 @@ impl Detector for DeadCode {
                     "Dead code — unreferenced function",
                     format!(
                         "Function '{}' is never called and is not an entry point.",
-                        name
+                        func.name
                     ),
                     Location {
                         file: program.source.display().to_string(),
-                        function: name.clone(),
+                        function: func.name.clone(),
                         statement_idx: Some(func.raw.entry_point),
                         line: None,
                         col: None,
@@ -243,11 +241,41 @@ impl Detector for DeadCode {
 }
 
 fn is_generated_function(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    // Compiler-generated / framework wrappers
     name.contains("__wrapper")
         || name.contains("__generated")
         || name.contains("__default")
-        || name.contains("drop_")
-        || name.contains("snapshot_")
+        || name.contains("__external")
+        || name.contains("__l1_handler")
+        || name.contains("__constructor")
+        // Standard library and framework implementations
         || name.starts_with("core::")
         || name.starts_with("starknet::")
+        || name.starts_with("openzeppelin::")
+        || name.starts_with("alexandria_")
+        // Trait implementations (Drop, Destruct, PartialEq, Serde, etc.)
+        // These are generated by derive macros and referenced indirectly.
+        || lower.contains("drop_")
+        || lower.contains("destruct_")
+        || lower.contains("snapshot_")
+        || lower.contains("serde")
+        || lower.contains("partial_eq")
+        || lower.contains("partial_ord")
+        || lower.contains("into_")
+        || lower.contains("try_into_")
+        || lower.contains("from_")
+        || lower.contains("hash_")
+        || lower.contains("print_")
+        || lower.contains("display_")
+        || lower.contains("debug_")
+        // Component internals (OZ patterns)
+        || name.contains("::InternalImpl")
+        || name.contains("::InternalTrait")
+        || name.contains("::HasComponent")
+        || name.contains("::ComponentState")
+        || name.contains("::StorageImpl")
+        || name.contains("::EventImpl")
+        // Test functions
+        || name.contains("::__test::")
 }

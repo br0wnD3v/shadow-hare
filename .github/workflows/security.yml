@@ -1,0 +1,46 @@
+name: Security Self-Scan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "fixtures/**"
+      - "Cargo.toml"
+
+permissions:
+  security-events: write
+
+jobs:
+  self-scan:
+    name: Self-scan with Shadowhare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build shadowhare
+        run: cargo build --release
+
+      - name: Run analysis on vulnerable fixtures (SARIF)
+        run: |
+          target/release/shdr detect fixtures/vulnerable/ \
+            --format sarif \
+            --min-severity info \
+            > results.sarif 2>/dev/null || true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
+
+      - name: Run analysis on clean fixtures (verify no false positives)
+        run: |
+          output=$(target/release/shdr detect fixtures/clean/ --format json --min-severity info 2>/dev/null)
+          count=$(echo "$output" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('findings',[])))" 2>/dev/null || echo "0")
+          echo "Clean fixture findings: $count"
+          if [ "$count" -gt "0" ]; then
+            echo "::warning::Found $count findings in clean fixtures (potential false positives)"
+          fi

@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
+use crate::analysis::sanitizers;
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Detects deploy syscalls where class hash is derived from user-controlled
 /// input in external entrypoints.
@@ -14,8 +16,6 @@ use crate::loader::CompatibilityTier;
 pub struct DeploySyscallTaintedClassHash;
 
 const DEPLOY_LIBFUNCS: &[&str] = &["deploy_syscall", "deploy"];
-const CLASS_HASH_CONST_LIBFUNCS: &[&str] = &["class_hash_const"];
-const PASS_THROUGH_LIBFUNCS: &[&str] = &["store_temp", "rename", "dup", "snapshot_take"];
 
 impl Detector for DeploySyscallTaintedClassHash {
     fn id(&self) -> &'static str {
@@ -46,96 +46,95 @@ impl Detector for DeploySyscallTaintedClassHash {
     fn run(&self, program: &ProgramIR) -> (Vec<Finding>, Vec<AnalyzerWarning>) {
         let mut findings = Vec::new();
         let warnings = Vec::new();
+        // Use hash_only_sanitizers: constants and hashes break taint.
+        // Also add storage_read — factory allowlists store permitted class hashes.
+        let mut deploy_sanitizers = sanitizers::hash_only_sanitizers();
+        deploy_sanitizers.extend_from_slice(sanitizers::STORAGE_READ);
 
         for func in program.external_functions() {
             let (start, end) = program.function_statement_range(func.idx);
             if start >= end {
                 continue;
             }
-            let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            let mut tainted: HashSet<u64> = func.raw.params.iter().map(|(id, _)| *id).collect();
-            let mut const_class_hash_vars: HashSet<u64> = HashSet::new();
-
-            for (local_idx, stmt) in stmts.iter().enumerate() {
-                let Some(inv) = stmt.as_invocation() else {
-                    continue;
-                };
-
-                let libfunc_name = program
-                    .libfunc_registry
-                    .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
-                    .unwrap_or("");
-
-                if CLASS_HASH_CONST_LIBFUNCS
-                    .iter()
-                    .any(|p| libfunc_name.contains(p))
-                {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            const_class_hash_vars.insert(*r);
-                        }
+            // Seed taint from non-System function params.
+            let seeds: HashSet<u64> = func
+                .raw
+                .params
+                .iter()
+                .filter_map(|(id, ty)| {
+                    let ty_name = ty.debug_name.as_deref().unwrap_or("");
+                    if ty_name == "System" {
+                        None
+                    } else {
+                        Some(*id)
                     }
-                    continue;
-                }
+                })
+                .collect();
 
-                let is_deploy = DEPLOY_LIBFUNCS.iter().any(|p| libfunc_name.contains(p));
-                if is_deploy {
-                    // Syscall-style layout is typically:
-                    // [system, class_hash, contract_address_salt, calldata, deploy_from_zero]
-                    // We conservatively try arg[1], then fallback to arg[0].
-                    let class_hash_var = inv.args.get(1).or_else(|| inv.args.first()).copied();
+            if seeds.is_empty() {
+                continue;
+            }
 
-                    if let Some(ch) = class_hash_var {
-                        let class_hash_tainted = tainted.contains(&ch);
-                        let class_hash_const = const_class_hash_vars.contains(&ch);
-                        if class_hash_tainted && !class_hash_const {
-                            findings.push(Finding::new(
-                                self.id(),
-                                self.severity(),
-                                self.confidence(),
-                                "User-controlled class hash in deploy_syscall",
-                                format!(
-                                    "Function '{}': deploy invocation at stmt {} uses a \
-                                     class hash derived from external input. Restrict \
-                                     deployable class hashes via storage-backed allowlist \
-                                     or trusted constants.",
-                                    func.name,
-                                    start + local_idx
-                                ),
-                                Location {
-                                    file: program.source.display().to_string(),
-                                    function: func.name.clone(),
-                                    statement_idx: Some(start + local_idx),
-                                    line: None,
-                                    col: None,
-                                },
-                            ));
-                        }
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                seeds,
+                &deploy_sanitizers,
+                &["function_call"],
+            );
+
+            for block_id in cfg.topological_order() {
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    let libfunc_name = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .or(inv.libfunc_id.debug_name.as_deref())
+                        .unwrap_or("");
+
+                    if !DEPLOY_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {
+                        continue;
                     }
-                }
 
-                let args_tainted = inv.args.iter().any(|a| tainted.contains(a));
-                let args_const_hash = inv.args.iter().any(|a| const_class_hash_vars.contains(a));
+                    // Syscall layout: [system, class_hash, salt, calldata, deploy_from_zero]
+                    // Check if class_hash (arg[1]) is tainted.
+                    let class_hash_tainted = inv
+                        .args
+                        .get(1)
+                        .or(inv.args.first())
+                        .is_some_and(|v| tainted.is_some_and(|t| t.contains(v)));
 
-                if args_tainted {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            tainted.insert(*r);
-                        }
-                    }
-                }
-
-                if args_const_hash
-                    && PASS_THROUGH_LIBFUNCS
-                        .iter()
-                        .any(|p| libfunc_name.contains(p))
-                {
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            const_class_hash_vars.insert(*r);
-                        }
+                    if class_hash_tainted {
+                        findings.push(Finding::new(
+                            self.id(),
+                            self.severity(),
+                            self.confidence(),
+                            "User-controlled class hash in deploy_syscall",
+                            format!(
+                                "Function '{}': deploy invocation at stmt {} uses a \
+                                 class hash derived from external input. Restrict \
+                                 deployable class hashes via storage-backed allowlist \
+                                 or trusted constants.",
+                                func.name, stmt_idx
+                            ),
+                            Location {
+                                file: program.source.display().to_string(),
+                                function: func.name.clone(),
+                                statement_idx: Some(stmt_idx),
+                                line: None,
+                                col: None,
+                            },
+                        ));
+                        break; // One finding per function.
                     }
                 }
             }

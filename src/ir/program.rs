@@ -5,6 +5,7 @@ use crate::loader::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tracing::debug;
 
 /// The primary IR used by all detectors and analysis passes.
 ///
@@ -32,6 +33,13 @@ impl ProgramIR {
             .functions
             .iter()
             .any(|f| f.id.debug_name.is_some());
+
+        debug!(
+            functions = artifact.program.functions.len(),
+            statements = artifact.program.statements.len(),
+            has_debug_info,
+            "Building ProgramIR from artifact"
+        );
 
         let type_registry = TypeRegistry::build(artifact.program.type_declarations);
         let libfunc_registry = LibfuncRegistry::build(artifact.program.libfunc_declarations);
@@ -79,7 +87,7 @@ impl ProgramIR {
     pub fn get_libfunc_name<'a>(&'a self, id: &'a SierraId) -> Option<&'a str> {
         self.libfunc_registry
             .generic_id(id)
-            .or_else(|| id.debug_name.as_deref())
+            .or(id.debug_name.as_deref())
     }
 
     pub fn external_functions(&self) -> impl Iterator<Item = &FunctionInfo> {

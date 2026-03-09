@@ -1,5 +1,8 @@
 use std::io::Write;
 
+use owo_colors::OwoColorize;
+use tracing::debug;
+
 use crate::detectors::{Finding, Severity};
 use crate::error::AnalyzerWarning;
 use crate::SourceCompatibility;
@@ -12,9 +15,14 @@ pub fn print_report<W: Write>(
     compatibility: &[SourceCompatibility],
     source: &str,
 ) -> std::io::Result<()> {
+    debug!(
+        findings = findings.len(),
+        warnings = warnings.len(),
+        "Rendering human report"
+    );
     // Header
-    writeln!(writer, "\nshadowhare — {source}\n")?;
-    writeln!(writer, "{}", "─".repeat(60))?;
+    writeln!(writer, "\n{} — {source}\n", "shadowhare".bold())?;
+    writeln!(writer, "{}", "─".repeat(60).dimmed())?;
 
     if findings.is_empty() {
         writeln!(writer, "  No findings.")?;
@@ -24,14 +32,35 @@ pub fn print_report<W: Write>(
         }
     }
 
-    writeln!(writer, "{}", "─".repeat(60))?;
+    writeln!(writer, "{}", "─".repeat(60).dimmed())?;
 
     // Summary
     let counts = finding_counts(findings);
     writeln!(
         writer,
-        "  Summary: {} critical, {} high, {} medium, {} low, {} info",
-        counts.critical, counts.high, counts.medium, counts.low, counts.info
+        "  {}: {} critical, {} high, {} medium, {} low, {} info",
+        "Summary".bold(),
+        if counts.critical > 0 {
+            format!("{}", counts.critical.red().bold())
+        } else {
+            format!("{}", counts.critical)
+        },
+        if counts.high > 0 {
+            format!("{}", counts.high.red())
+        } else {
+            format!("{}", counts.high)
+        },
+        if counts.medium > 0 {
+            format!("{}", counts.medium.yellow())
+        } else {
+            format!("{}", counts.medium)
+        },
+        if counts.low > 0 {
+            format!("{}", counts.low.cyan())
+        } else {
+            format!("{}", counts.low)
+        },
+        counts.info.dimmed()
     )?;
 
     if !compatibility.is_empty() {
@@ -66,13 +95,8 @@ pub fn print_report<W: Write>(
 }
 
 fn print_finding<W: Write>(writer: &mut W, f: &Finding) -> std::io::Result<()> {
-    let icon = severity_icon(f.severity);
-    writeln!(
-        writer,
-        "\n{icon} [{severity}] {title}",
-        severity = f.severity,
-        title = f.title
-    )?;
+    let icon = severity_icon_colored(f.severity);
+    writeln!(writer, "\n{icon} {title}", title = f.title)?;
     writeln!(writer, "   Detector:   {}", f.detector_id)?;
     writeln!(writer, "   Confidence: {}", f.confidence)?;
     writeln!(writer, "   Function:   {}", f.location.function)?;
@@ -94,13 +118,13 @@ fn print_finding<W: Write>(writer: &mut W, f: &Finding) -> std::io::Result<()> {
     Ok(())
 }
 
-fn severity_icon(s: Severity) -> &'static str {
+fn severity_icon_colored(s: Severity) -> String {
     match s {
-        Severity::Critical => "[CRITICAL]",
-        Severity::High => "[HIGH]    ",
-        Severity::Medium => "[MEDIUM]  ",
-        Severity::Low => "[LOW]     ",
-        Severity::Info => "[INFO]    ",
+        Severity::Critical => format!("{}", "[CRITICAL]".red().bold()),
+        Severity::High => format!("{}", "[HIGH]    ".red()),
+        Severity::Medium => format!("{}", "[MEDIUM]  ".yellow()),
+        Severity::Low => format!("{}", "[LOW]     ".cyan()),
+        Severity::Info => format!("{}", "[INFO]    ".dimmed()),
     }
 }
 

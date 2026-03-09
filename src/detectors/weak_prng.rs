@@ -1,20 +1,36 @@
 use std::collections::HashSet;
 
+use crate::analysis::taint::run_taint_analysis;
 use crate::detectors::{Confidence, Detector, DetectorRequirements, Finding, Location, Severity};
 use crate::error::AnalyzerWarning;
 use crate::ir::program::ProgramIR;
-use crate::loader::CompatibilityTier;
+use crate::loader::{CompatibilityTier, Statement};
 
 /// Detects pseudo-randomness derived from block/environment values.
+///
+/// Narrowed sink set: only flags env-derived values that reach external calls
+/// or hash-then-branch patterns (actual PRNG usage). Arithmetic like felt252_add
+/// and felt252_mul are excluded as they cause too many FPs from benign
+/// bookkeeping operations.
 pub struct WeakPrng;
 
 const ENV_ENTROPY_LIBFUNCS: &[&str] = &[
     "get_block_hash",
     "get_block_info",
-    "get_execution_info",
     "get_block_timestamp",
     "get_block_number",
 ];
+
+/// Narrow sinks: external calls, L1 messages, and storage writes where
+/// predictable randomness has security impact.
+const PRNG_SINK_LIBFUNCS: &[&str] = &[
+    "call_contract",
+    "send_message_to_l1",
+    "storage_write_syscall",
+];
+
+/// Hash functions used to derive randomness from env values.
+const HASH_LIBFUNCS: &[&str] = &["pedersen", "poseidon", "hades_permutation"];
 
 impl Detector for WeakPrng {
     fn id(&self) -> &'static str {
@@ -50,47 +66,85 @@ impl Detector for WeakPrng {
             if start >= end {
                 continue;
             }
+            let end = end.min(program.statements.len());
 
-            let mut entropy_vars: HashSet<u64> = HashSet::new();
+            // Find env entropy sources and seed taint from their results.
+            let mut entropy_seeds: HashSet<u64> = HashSet::new();
 
-            for (local_idx, stmt) in program.statements[start..end.min(program.statements.len())]
-                .iter()
-                .enumerate()
-            {
-                let Some(inv) = stmt.as_invocation() else {
-                    continue;
+            for stmt in &program.statements[start..end] {
+                let inv = match stmt.as_invocation() {
+                    Some(inv) => inv,
+                    None => continue,
                 };
-                let abs = start + local_idx;
-
                 let name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if ENV_ENTROPY_LIBFUNCS.iter().any(|p| name.contains(p)) {
                     for branch in &inv.branches {
                         for r in &branch.results {
-                            entropy_vars.insert(*r);
+                            entropy_seeds.insert(*r);
                         }
                     }
-                    continue;
                 }
+            }
 
-                let uses_entropy = inv.args.iter().any(|a| entropy_vars.contains(a));
-                if uses_entropy {
-                    // Keep this sink set narrow to avoid flagging benign usage such as:
-                    // - timestamp persisted for timelocks/expiry bookkeeping
-                    // - hashing for deterministic IDs/keys
-                    //
-                    // The detector targets env-derived values flowing into
-                    // pseudo-random arithmetic or cross-contract/message effects.
-                    let reaches_sensitive_sink = name.contains("call_contract")
-                        || name.contains("send_message_to_l1")
-                        || name.contains("felt252_add")
-                        || name.contains("felt252_mul");
+            if entropy_seeds.is_empty() {
+                continue;
+            }
 
-                    if reaches_sensitive_sink {
+            // Run taint from env sources. Don't sanitize with hashes — hashing
+            // env values is exactly the PRNG pattern we want to detect.
+            // Only break taint on constants and identity (caller_address, etc.).
+            let sanitizers: Vec<&str> = crate::analysis::sanitizers::CONST_PRODUCERS
+                .iter()
+                .chain(crate::analysis::sanitizers::IDENTITY_PRODUCERS.iter())
+                .chain(crate::analysis::sanitizers::STORAGE_READ.iter())
+                .copied()
+                .collect();
+
+            let (cfg, block_taint) = run_taint_analysis(
+                program,
+                func.idx,
+                entropy_seeds,
+                &sanitizers,
+                &["function_call"],
+            );
+
+            let mut found = false;
+            for block_id in cfg.topological_order() {
+                if found {
+                    break;
+                }
+                let block = &cfg.blocks[block_id];
+                let tainted = block_taint.get(&block_id);
+
+                for &stmt_idx in &block.stmts {
+                    let stmt = &program.statements[stmt_idx];
+                    let inv = match stmt {
+                        Statement::Invocation(inv) => inv,
+                        _ => continue,
+                    };
+
+                    let name = program
+                        .libfunc_registry
+                        .generic_id(&inv.libfunc_id)
+                        .or(inv.libfunc_id.debug_name.as_deref())
+                        .unwrap_or("");
+
+                    // Check for env->hash pattern (PRNG) or sensitive sinks
+                    let is_hash = HASH_LIBFUNCS.iter().any(|p| name.contains(p));
+                    let is_sink = PRNG_SINK_LIBFUNCS.iter().any(|p| name.contains(p))
+                        || program.libfunc_registry.is_storage_write(&inv.libfunc_id);
+
+                    if (is_hash || is_sink)
+                        && inv
+                            .args
+                            .iter()
+                            .any(|a| tainted.is_some_and(|t| t.contains(a)))
+                    {
                         findings.push(Finding::new(
                             self.id(),
                             self.severity(),
@@ -99,23 +153,18 @@ impl Detector for WeakPrng {
                             format!(
                                 "Function '{}': env-derived value reaches '{}' at stmt {}. \
                                  Block/sequencer metadata is not a secure randomness source.",
-                                func.name, name, abs
+                                func.name, name, stmt_idx
                             ),
                             Location {
                                 file: program.source.display().to_string(),
                                 function: func.name.clone(),
-                                statement_idx: Some(abs),
+                                statement_idx: Some(stmt_idx),
                                 line: None,
                                 col: None,
                             },
                         ));
+                        found = true;
                         break;
-                    }
-
-                    for branch in &inv.branches {
-                        for r in &branch.results {
-                            entropy_vars.insert(*r);
-                        }
                     }
                 }
             }

@@ -3,6 +3,7 @@ use std::process;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use tracing::{info, warn};
 
 use shadowhare::config::{load_scarb_config, AnalyzerConfig, DetectorSelection};
 use shadowhare::detectors::{DetectorRegistry, Severity};
@@ -25,6 +26,18 @@ use shadowhare::{analyse_paths, render_output, update_baseline, OutputFormat};
     long_about = None
 )]
 struct Cli {
+    /// Increase log verbosity (sets RUST_LOG=shadowhare=debug).
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
+    /// Suppress non-essential output (sets RUST_LOG=shadowhare=error).
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    /// Disable colored output. Also respects the NO_COLOR env variable.
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -170,6 +183,10 @@ enum PrinterArg {
     Summary,
     Callgraph,
     AttackSurface,
+    DataDependence,
+    StorageLayout,
+    FunctionSignatures,
+    IrDump,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -222,6 +239,10 @@ impl From<PrinterArg> for CorePrinterKind {
             PrinterArg::Summary => CorePrinterKind::Summary,
             PrinterArg::Callgraph => CorePrinterKind::Callgraph,
             PrinterArg::AttackSurface => CorePrinterKind::AttackSurface,
+            PrinterArg::DataDependence => CorePrinterKind::DataDependence,
+            PrinterArg::StorageLayout => CorePrinterKind::StorageLayout,
+            PrinterArg::FunctionSignatures => CorePrinterKind::FunctionSignatures,
+            PrinterArg::IrDump => CorePrinterKind::IrDump,
         }
     }
 }
@@ -250,8 +271,18 @@ impl From<DiffFormatArg> for CoreDiffOutputFormat {
 fn main() {
     let cli = Cli::parse();
 
+    // Determine color support
+    let use_color = !cli.no_color && std::env::var("NO_COLOR").is_err();
+    if !use_color {
+        owo_colors::set_override(false);
+    }
+
+    // Init tracing subscriber
+    init_tracing(cli.verbose, cli.quiet);
+
+    let quiet = cli.quiet;
     let result = match cli.command {
-        Command::Detect(args) => run_detect(args),
+        Command::Detect(args) => run_detect(args, quiet),
         Command::DetectDiff(args) => run_detect_diff(args),
         Command::Print(args) => run_print(args),
         Command::UpdateBaseline(args) => run_update_baseline(args),
@@ -261,14 +292,36 @@ fn main() {
     match result {
         Ok(code) => process::exit(code),
         Err(e) => {
-            eprintln!("error: {e:#}");
+            tracing::error!("{e:#}");
             process::exit(2);
         }
     }
 }
 
-fn run_detect(args: DetectArgs) -> Result<i32> {
-    // Build config, merging Scarb.toml → CLI flags (CLI takes precedence)
+fn init_tracing(verbose: bool, quiet: bool) {
+    use tracing_subscriber::EnvFilter;
+
+    let default_filter = if verbose {
+        "shadowhare=debug"
+    } else if quiet {
+        "shadowhare=error"
+    } else {
+        "shadowhare=warn"
+    };
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
+fn run_detect(args: DetectArgs, quiet: bool) -> Result<i32> {
+    let _ = quiet; // reserved for progress bar suppression (added via lib.rs)
+                   // Build config, merging Scarb.toml → CLI flags (CLI takes precedence)
     let mut config = if let Some(manifest) = &args.manifest {
         match load_scarb_config(manifest)? {
             Some(scarb_cfg) => shadowhare::config::AnalyzerConfig::from_scarb(scarb_cfg)
@@ -341,10 +394,10 @@ fn run_update_baseline(args: UpdateBaselineArgs) -> Result<i32> {
 
     update_baseline(&args.baseline, &result.findings).context("Failed to update baseline")?;
 
-    eprintln!(
-        "Baseline updated: {} findings written to {}",
-        result.findings.len(),
-        args.baseline.display()
+    info!(
+        findings = result.findings.len(),
+        path = %args.baseline.display(),
+        "Baseline updated"
     );
     Ok(0)
 }
@@ -452,7 +505,7 @@ fn resolve_paths(inputs: &[PathBuf]) -> Vec<PathBuf> {
         } else if input.exists() {
             paths.push(input.clone());
         } else {
-            eprintln!("warning: path not found: {}", input.display());
+            warn!(path = %input.display(), "Path not found");
         }
     }
     paths

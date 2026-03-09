@@ -1,11 +1,17 @@
 [package]
 name = "shadowhare"
 version = "0.1.0"
+authors = ["br0wnD3v"]
 edition = "2021"
 description = "Production-grade static analyzer for Cairo/Starknet smart contracts"
-authors = ["br0wnD3v (AJ)"]
 license = "MIT OR Apache-2.0"
 rust-version = "1.75"
+repository = "https://github.com/br0wnD3v/shadowhare"
+homepage = "https://github.com/br0wnD3v/shadowhare"
+keywords = ["starknet", "cairo", "security", "static-analysis", "smart-contracts"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
+exclude = ["target_contracts/", "fixtures/", ".github/"]
 
 [[bin]]
 name = "shadowhare"
@@ -62,10 +68,25 @@ toml = "0.8"
 # Petgraph for CFG representation
 petgraph = "0.6"
 
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Colored terminal output
+owo-colors = { version = "4", features = ["supports-colors"] }
+
+# Progress bars
+indicatif = "0.17"
+
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
 serde_json = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "analysis_bench"
+harness = false
 
 [profile.release]
 lto = true

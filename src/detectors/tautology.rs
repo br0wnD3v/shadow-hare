@@ -72,7 +72,7 @@ impl Detector for TautologicalCompare {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if !COMPARISON_LIBFUNCS.iter().any(|p| libfunc_name.contains(p)) {

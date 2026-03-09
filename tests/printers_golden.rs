@@ -15,8 +15,12 @@ fn seeded_pure_fixture(name: &str) -> PathBuf {
 fn summary_printer_json_is_deterministic() {
     let path = seeded_pure_fixture("deploy_syscall_tainted_class_hash.sierra.json");
 
-    let out1 = render_paths(&[path.clone()], PrinterKind::Summary, PrinterFormat::Json)
-        .expect("summary render #1");
+    let out1 = render_paths(
+        std::slice::from_ref(&path),
+        PrinterKind::Summary,
+        PrinterFormat::Json,
+    )
+    .expect("summary render #1");
     let out2 = render_paths(&[path], PrinterKind::Summary, PrinterFormat::Json)
         .expect("summary render #2");
 

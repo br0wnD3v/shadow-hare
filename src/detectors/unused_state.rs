@@ -44,17 +44,13 @@ impl Detector for UnusedState {
             }
             let stmts = &program.statements[start..end.min(program.statements.len())];
 
-            let mut read_results: Vec<(usize, Vec<u64>)> = Vec::new();
-            let mut used_vars: HashSet<u64> = HashSet::new();
+            // First pass: collect storage read sites and their produced variables.
+            let mut read_results: Vec<(usize, usize, Vec<u64>)> = Vec::new(); // (local_idx, abs_idx, vars)
 
             for (local_idx, stmt) in stmts.iter().enumerate() {
                 let Some(inv) = stmt.as_invocation() else {
                     continue;
                 };
-
-                for arg in &inv.args {
-                    used_vars.insert(*arg);
-                }
 
                 if program.libfunc_registry.is_storage_read(&inv.libfunc_id) {
                     let produced: Vec<u64> = inv
@@ -63,13 +59,35 @@ impl Detector for UnusedState {
                         .flat_map(|b| b.results.iter().copied())
                         .collect();
                     if !produced.is_empty() {
-                        read_results.push((start + local_idx, produced));
+                        read_results.push((local_idx, start + local_idx, produced));
                     }
                 }
             }
 
-            for (stmt_idx, produced) in read_results {
-                if produced.iter().all(|v| !used_vars.contains(v)) {
+            // Second pass: for each read, check if its produced vars are used
+            // in any SUBSEQUENT statement (not before the read).
+            for (read_local_idx, abs_idx, produced) in &read_results {
+                let produced_set: HashSet<u64> = produced.iter().copied().collect();
+                let mut any_used = false;
+
+                for stmt in stmts.iter().skip(read_local_idx + 1) {
+                    let Some(inv) = stmt.as_invocation() else {
+                        // Return statements also consume vars
+                        if let crate::loader::Statement::Return(vars) = stmt {
+                            if vars.iter().any(|v| produced_set.contains(v)) {
+                                any_used = true;
+                                break;
+                            }
+                        }
+                        continue;
+                    };
+                    if inv.args.iter().any(|a| produced_set.contains(a)) {
+                        any_used = true;
+                        break;
+                    }
+                }
+
+                if !any_used {
                     findings.push(Finding::new(
                         self.id(),
                         self.severity(),
@@ -77,12 +95,12 @@ impl Detector for UnusedState {
                         "Unused storage read",
                         format!(
                             "Function '{}': storage_read result at stmt {} is never consumed.",
-                            func.name, stmt_idx
+                            func.name, abs_idx
                         ),
                         Location {
                             file: program.source.display().to_string(),
                             function: func.name.clone(),
-                            statement_idx: Some(stmt_idx),
+                            statement_idx: Some(*abs_idx),
                             line: None,
                             col: None,
                         },

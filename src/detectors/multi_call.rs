@@ -73,7 +73,7 @@ impl Detector for MultipleExternalCalls {
                 let libfunc_name = program
                     .libfunc_registry
                     .generic_id(&inv.libfunc_id)
-                    .or_else(|| inv.libfunc_id.debug_name.as_deref())
+                    .or(inv.libfunc_id.debug_name.as_deref())
                     .unwrap_or("");
 
                 if libfunc_name.contains("call_contract_syscall")
