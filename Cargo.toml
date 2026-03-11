@@ -11,7 +11,7 @@ homepage = "https://github.com/br0wnD3v/shadowhare"
 keywords = ["starknet", "cairo", "security", "static-analysis", "smart-contracts"]
 categories = ["development-tools", "command-line-utilities"]
 readme = "README.md"
-exclude = ["target_contracts/", "fixtures/", ".github/"]
+exclude = ["target_contracts/", "fixtures/", ".github/", "benches/"]
 
 [[bin]]
 name = "shadowhare"
