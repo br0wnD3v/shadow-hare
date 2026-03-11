@@ -1,6 +1,6 @@
 [package]
 name = "shadowhare"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["br0wnD3v"]
 edition = "2021"
 description = "Production-grade static analyzer for Cairo/Starknet smart contracts"
