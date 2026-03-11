@@ -66,7 +66,7 @@ jobs:
           sha256sum "${dir}.${{ matrix.archive }}" > "${dir}.${{ matrix.archive }}.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shadowhare-${{ matrix.target }}
           path: |
