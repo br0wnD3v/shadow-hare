@@ -56,7 +56,7 @@ semver = { version = "1", features = ["serde"] }
 indexmap = { version = "2", features = ["serde"] }
 
 # String interning / small strings
-smol_str = { version = "0.2", features = ["serde"] }
+smol_str = { version = "0.3", features = ["serde"] }
 
 # Hashing for baseline fingerprints
 sha2 = "0.10"
